@@ -29,7 +29,28 @@ def services_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     text="Konvertor", callback_data="services:converter"
+                )
+            ],
+            [
+                InlineKeyboardButton(text="1secmail", callback_data="services:tempmail"),
+                InlineKeyboardButton(text="TinyURL", callback_data="services:tinyurl"),
+            ],
+            [
+                InlineKeyboardButton(text="ShazamIO", callback_data="services:shazam"),
+                InlineKeyboardButton(
+                    text="Tarjimon", callback_data="services:translate"
                 ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Wikipedia", callback_data="services:wikipedia"
+                ),
+                InlineKeyboardButton(text="Rembg", callback_data="services:rembg"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Pollinations AI", callback_data="services:pollinations"
+                )
             ],
         ]
     )
@@ -53,7 +74,14 @@ def main_menu_text(max_file_bytes: int) -> str:
         "<b>Saqlash</b> - direct linkdan yuklab chatga yuboradi\n"
         "<b>Ob-havo</b> - shahar yoki lokatsiya boyicha ob-havo\n"
         "<b>Valyuta</b> - songgi kurslar\n"
-        "<b>Konvertor</b> - hujjat va rasm konvertatsiyasi\n\n"
+        "<b>Konvertor</b> - hujjat va rasm konvertatsiyasi\n"
+        "<b>1secmail</b> - temporary email inbox\n"
+        "<b>TinyURL</b> - uzun linkni qisqartirish\n"
+        "<b>ShazamIO</b> - audio trekni aniqlash\n"
+        "<b>Tarjimon</b> - Googletrans/DeepLX\n"
+        "<b>Wikipedia</b> - tezkor ensiklopediya qidiruvi\n"
+        "<b>Rembg</b> - rasm fonini olib tashlash\n"
+        "<b>Pollinations AI</b> - AI rasm generatsiya\n\n"
         f"Saqlash limiti: <b>{_format_bytes(max_file_bytes)}</b>"
     )
 

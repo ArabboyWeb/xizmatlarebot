@@ -6,3 +6,7 @@ aiofiles==24.1.0
 Pillow==11.2.1
 PyMuPDF==1.26.5
 yt-dlp==2026.2.21
+googletrans==4.0.2
+shazamio==0.8.1
+rembg==2.0.67
+onnxruntime==1.22.0

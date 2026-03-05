@@ -21,7 +21,14 @@ from services.saver import (
 )
 from handlers.converter import router as converter_router
 from handlers.currency import router as currency_router
+from handlers.pollinations import router as pollinations_router
+from handlers.rembg import router as rembg_router
+from handlers.shazam import router as shazam_router
+from handlers.tempmail import router as tempmail_router
+from handlers.tinyurl import router as tinyurl_router
+from handlers.translate import router as translate_router
 from handlers.weather import router as weather_router
+from handlers.wikipedia import router as wikipedia_router
 from ui.main_menu import (
     main_menu_text,
     safe_edit_menu,
@@ -174,6 +181,13 @@ async def main() -> None:
     dispatcher.include_router(weather_router)
     dispatcher.include_router(currency_router)
     dispatcher.include_router(converter_router)
+    dispatcher.include_router(tempmail_router)
+    dispatcher.include_router(tinyurl_router)
+    dispatcher.include_router(shazam_router)
+    dispatcher.include_router(translate_router)
+    dispatcher.include_router(wikipedia_router)
+    dispatcher.include_router(rembg_router)
+    dispatcher.include_router(pollinations_router)
 
     try:
         await verify_bot_access(bot)
