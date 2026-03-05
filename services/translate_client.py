@@ -5,22 +5,15 @@ from typing import Any
 
 import aiohttp
 
-DEEPLX_TIMEOUT_SECONDS = 20
+LIBRETRANSLATE_TIMEOUT_SECONDS = 20
+DEFAULT_LIBRETRANSLATE_ENDPOINT = "https://translate.argosopentech.com/translate"
+ALLOWED_LANGUAGE_CODES = {"auto", "uz", "en", "ru", "zh-cn"}
 
 LANG_LABELS = {
     "auto": "Auto",
     "uz": "Uzbek",
     "en": "English",
     "ru": "Russian",
-    "tr": "Turkish",
-    "de": "German",
-    "fr": "French",
-    "es": "Spanish",
-    "it": "Italian",
-    "ar": "Arabic",
-    "hi": "Hindi",
-    "ja": "Japanese",
-    "ko": "Korean",
     "zh-cn": "Chinese (Simplified)",
 }
 
@@ -42,8 +35,26 @@ def _normalize_language(code: str) -> str:
     normalized = (code or "").strip().lower()
     if not normalized:
         return "auto"
-    if normalized in {"zh", "zh-cn"}:
+    if normalized.startswith("zh"):
         return "zh-cn"
+    return normalized
+
+
+def _validate_language(code: str, *, allow_auto: bool) -> str:
+    normalized = _normalize_language(code)
+    if normalized == "auto" and allow_auto:
+        return normalized
+    if normalized == "auto" and not allow_auto:
+        raise ValueError("Maqsad til uchun auto ishlatilmaydi.")
+    if normalized not in ALLOWED_LANGUAGE_CODES:
+        raise ValueError("Faqat uz, en, ru, zh-cn tillari qo'llab-quvvatlanadi.")
+    return normalized
+
+
+def _libre_code(code: str) -> str:
+    normalized = _normalize_language(code)
+    if normalized == "zh-cn":
+        return "zh"
     return normalized
 
 
@@ -70,43 +81,32 @@ def _translate_google_sync(text: str, source: str, target: str) -> TranslationRe
     )
 
 
-def _extract_deeplx_text(payload: dict[str, Any]) -> str:
-    direct = str(payload.get("data", "")).strip()
-    if direct:
-        return direct
-
-    alternatives = payload.get("alternatives")
-    if isinstance(alternatives, list) and alternatives:
-        first = str(alternatives[0]).strip()
-        if first:
-            return first
-
-    translations = payload.get("translations")
-    if isinstance(translations, list) and translations:
-        first = translations[0]
-        if isinstance(first, dict):
-            candidate = str(first.get("text", "")).strip()
-            if candidate:
-                return candidate
-
-    return ""
+def _detected_source_from_libre(payload: dict[str, Any], default_source: str) -> str:
+    detected = payload.get("detectedLanguage")
+    if isinstance(detected, dict):
+        return _normalize_language(str(detected.get("language", default_source)))
+    if isinstance(detected, str):
+        return _normalize_language(detected)
+    return _normalize_language(default_source)
 
 
-async def _translate_deeplx(
-    text: str, source: str, target: str, endpoint: str, auth_key: str
+async def _translate_libre(
+    text: str, source: str, target: str, endpoint: str, api_key: str
 ) -> TranslationResult:
-    timeout = aiohttp.ClientTimeout(total=DEEPLX_TIMEOUT_SECONDS)
+    timeout = aiohttp.ClientTimeout(total=LIBRETRANSLATE_TIMEOUT_SECONDS)
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    if auth_key:
-        headers["Authorization"] = f"Bearer {auth_key}"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
-    source_lang = source if source != "auto" else "auto"
-    target_lang = target
     payload = {
         "text": text,
-        "source_lang": source_lang.upper() if source_lang != "auto" else "auto",
-        "target_lang": target_lang.upper(),
+        "q": text,
+        "source": _libre_code(source),
+        "target": _libre_code(target),
+        "format": "text",
     }
+    if api_key:
+        payload["api_key"] = api_key
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(endpoint, headers=headers, json=payload) as response:
@@ -116,24 +116,24 @@ async def _translate_deeplx(
                 if isinstance(body, dict):
                     message = str(body.get("message", "")).strip()
                 raise RuntimeError(
-                    f"DeepLX API xatosi: HTTP {response.status}. {message or 'Request failed'}"
+                    f"LibreTranslate API xatosi: HTTP {response.status}. {message or 'Request failed'}"
                 )
 
     if not isinstance(body, dict):
-        raise RuntimeError("DeepLX API noto'g'ri formatda javob qaytardi.")
+        raise RuntimeError("LibreTranslate API noto'g'ri formatda javob qaytardi.")
 
-    translated = _extract_deeplx_text(body)
+    translated = str(body.get("translatedText", "")).strip()
     if not translated:
-        raise RuntimeError("DeepLX tarjima javobi bo'sh qaytdi.")
+        raise RuntimeError("LibreTranslate tarjima javobi bo'sh qaytdi.")
 
-    detected_source = _normalize_language(str(body.get("source_lang", source) or source))
-    detected_target = _normalize_language(str(body.get("target_lang", target) or target))
+    detected_source = _detected_source_from_libre(body, source)
+    detected_target = _normalize_language(target)
     return TranslationResult(
         source=detected_source,
         target=detected_target,
         text=translated,
         pronunciation="",
-        engine="deeplx",
+        engine="libretranslate",
     )
 
 
@@ -150,14 +150,19 @@ async def translate_text(
     text: str, source: str, target: str, engine: str = "auto"
 ) -> TranslationResult:
     clean_text = _clean_text(text)
-    normalized_source = _normalize_language(source)
-    normalized_target = _normalize_language(target)
+    normalized_source = _validate_language(source, allow_auto=True)
+    normalized_target = _validate_language(target, allow_auto=False)
     normalized_engine = (engine or "auto").strip().lower()
-    if normalized_engine not in {"auto", "google", "deeplx"}:
+    if normalized_engine in {"libre", "libretranslate"}:
+        normalized_engine = "libretranslate"
+    if normalized_engine not in {"auto", "google", "libretranslate"}:
         raise ValueError("Tarjima engine noto'g'ri berildi.")
 
-    deeplx_endpoint = os.getenv("DEEPLX_ENDPOINT", "").strip()
-    deeplx_auth_key = os.getenv("DEEPLX_AUTH_KEY", "").strip()
+    libre_endpoint = (
+        os.getenv("LIBRETRANSLATE_ENDPOINT", "").strip()
+        or DEFAULT_LIBRETRANSLATE_ENDPOINT
+    )
+    libre_api_key = os.getenv("LIBRETRANSLATE_API_KEY", "").strip()
 
     if normalized_engine == "google":
         return await asyncio.to_thread(
@@ -167,30 +172,25 @@ async def translate_text(
             normalized_target,
         )
 
-    if normalized_engine == "deeplx":
-        if not deeplx_endpoint:
-            raise RuntimeError(
-                "DeepLX endpoint sozlanmagan. DEEPLX_ENDPOINT ni .env ga yozing."
-            )
-        return await _translate_deeplx(
+    if normalized_engine == "libretranslate":
+        return await _translate_libre(
             clean_text,
             normalized_source,
             normalized_target,
-            deeplx_endpoint,
-            deeplx_auth_key,
+            libre_endpoint,
+            libre_api_key,
         )
 
-    if deeplx_endpoint:
-        try:
-            return await _translate_deeplx(
-                clean_text,
-                normalized_source,
-                normalized_target,
-                deeplx_endpoint,
-                deeplx_auth_key,
-            )
-        except Exception:  # noqa: BLE001
-            pass
+    try:
+        return await _translate_libre(
+            clean_text,
+            normalized_source,
+            normalized_target,
+            libre_endpoint,
+            libre_api_key,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     return await asyncio.to_thread(
         _translate_google_sync,
