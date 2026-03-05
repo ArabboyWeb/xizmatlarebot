@@ -40,6 +40,14 @@ def services_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="JSearch Jobs", callback_data="services:jobs"
+                ),
+                InlineKeyboardButton(
+                    text="YouTube Search", callback_data="services:youtube"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="Wikipedia", callback_data="services:wikipedia"
                 ),
                 InlineKeyboardButton(text="Rembg", callback_data="services:rembg"),
@@ -62,8 +70,10 @@ def main_menu_text(upload_limit_bytes: int, download_limit_bytes: int) -> str:
         "<b>Konvertor</b> - hujjat va rasm konvertatsiyasi\n"
         "<b>1secmail</b> - temporary email inbox\n"
         "<b>TinyURL</b> - uzun linkni qisqartirish\n"
-        "<b>ShazamIO</b> - audio trekni aniqlash\n"
-        "<b>Tarjimon</b> - Googletrans/LibreTranslate\n"
+        "<b>ShazamIO</b> - qo'shiq nomi auto-complete\n"
+        "<b>Tarjimon</b> - RapidAPI Text Translator\n"
+        "<b>JSearch Jobs</b> - ish qidiruvi\n"
+        "<b>YouTube Search</b> - channel ichida video qidirish\n"
         "<b>Wikipedia</b> - tezkor ensiklopediya qidiruvi\n"
         "<b>Rembg</b> - rasm fonini olib tashlash\n"
         "<b>Pollinations AI</b> - AI rasm generatsiya\n\n"

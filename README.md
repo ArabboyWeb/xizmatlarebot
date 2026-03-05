@@ -6,12 +6,14 @@ Telegram bot faqat **free API** servislar bilan ishlaydi.
 - `1secmail` - temporary email yaratish, inbox ko'rish, message ID bilan xabar o'qish.
   - Agar 1secmail bloklansa, bot avtomatik `mail.tm` ga fallback qiladi.
 - `TinyURL` - uzun URL ni qisqartirish (`TINYURL_API_TOKEN` bo'lsa official API, bo'lmasa legacy free endpoint).
-- `ShazamIO` - audio/voice dan trek aniqlash.
-- `Tarjimon` - `Googletrans + LibreTranslate` (free), faqat quyidagi tillar:
+- `Shazam Auto-Complete` (RapidAPI) - qo'shiq nomi bo'yicha auto-complete.
+- `JSearch Jobs` (RapidAPI) - ish qidiruvi.
+- `Tarjimon` (RapidAPI Text-Translator2) - tillar:
   - `uz`
   - `en`
   - `ru`
-  - `zh-cn`
+  - `zh`
+- `YouTube Channel Search` (RapidAPI) - channel ichida qidiruv.
 - `Wikipedia` - maqola summary qidirish.
 - `Rembg` - rasm fonini olib tashlash.
 - `Pollinations AI` - free AI image generation.
@@ -37,11 +39,15 @@ pip install -r requirements.txt
 1. `.env.example` ni asos qilib `.env` tayyorlang.
 2. Kamida `BOT_TOKEN` ni kiriting.
 3. TinyURL official API ishlatmoqchi bo'lsangiz `TINYURL_API_TOKEN` ni kiriting.
-4. LibreTranslate uchun kerak bo'lsa:
-   - `LIBRETRANSLATE_ENDPOINT`
-   - `LIBRETRANSLATE_API_KEY`
+4. RapidAPI servislar uchun:
+   - `RAPIDAPI_KEY`
+   - kerak bo'lsa `YOUTUBE_CHANNEL_ID`
 5. Temp mail fallback uchun ixtiyoriy:
    - `MAILTM_API_BASE`
+
+## RapidAPI eslatma
+- Agar bot `You are not subscribed to this API` desa, RapidAPI dashboard orqali o'sha API ga obuna bo'lish kerak.
+- Free plan mavjud bo'lsa free obuna qiling; pullik bo'lsa ishlatmaslik mumkin.
 
 ## Ishga tushirish
 ```bash

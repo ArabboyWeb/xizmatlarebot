@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from handlers.converter import router as converter_router
 from handlers.currency import router as currency_router
 from handlers.fallback import router as fallback_router
+from handlers.jobs import router as jobs_router
 from handlers.pollinations import router as pollinations_router
 from handlers.rembg import router as rembg_router
 from handlers.shazam import router as shazam_router
@@ -22,6 +23,7 @@ from handlers.tinyurl import router as tinyurl_router
 from handlers.translate import router as translate_router
 from handlers.weather import router as weather_router
 from handlers.wikipedia import router as wikipedia_router
+from handlers.youtube_search import router as youtube_search_router
 from ui.main_menu import main_menu_text, safe_edit_menu, services_keyboard
 
 DEFAULT_POLLING_RESTART_DELAY_SECONDS = 8
@@ -171,6 +173,8 @@ async def main() -> None:
     dispatcher.include_router(tinyurl_router)
     dispatcher.include_router(shazam_router)
     dispatcher.include_router(translate_router)
+    dispatcher.include_router(jobs_router)
+    dispatcher.include_router(youtube_search_router)
     dispatcher.include_router(wikipedia_router)
     dispatcher.include_router(rembg_router)
     dispatcher.include_router(pollinations_router)
