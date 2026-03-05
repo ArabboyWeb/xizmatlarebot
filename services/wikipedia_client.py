@@ -1,4 +1,5 @@
 from html import unescape
+import os
 from typing import Any
 from urllib.parse import quote
 
@@ -6,6 +7,9 @@ import aiohttp
 
 WIKI_API_TEMPLATE = "https://{lang}.wikipedia.org/w/api.php"
 HTTP_TIMEOUT_SECONDS = 15
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (XizmatlarBot/1.0; +https://core.telegram.org/bots/api)"
+)
 
 
 async def _request_json(lang: str, params: dict[str, str | int]) -> dict[str, Any]:
@@ -17,10 +21,19 @@ async def _request_json(lang: str, params: dict[str, str | int]) -> dict[str, An
     }
     request_params.update(params)
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    headers = {
+        "User-Agent": os.getenv("HTTP_USER_AGENT", "").strip() or DEFAULT_USER_AGENT,
+        "Accept": "application/json, text/plain, */*",
+    }
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         async with session.get(url, params=request_params) as response:
             if response.status >= 500:
                 raise RuntimeError("Wikipedia xizmati vaqtincha ishlamayapti.")
+            if response.status >= 400:
+                body = (await response.text())[:180]
+                raise RuntimeError(
+                    f"Wikipedia API xatosi: HTTP {response.status}. {body}"
+                )
             response.raise_for_status()
             payload = await response.json(content_type=None)
 

@@ -1,26 +1,19 @@
 import asyncio
 import logging
+import os
 
+import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, Message
-import aiohttp
+from dotenv import load_dotenv
 
-from services.saver import (
-    DirectLinkDownloaderBot,
-    InstanceLock,
-    build_bot_session,
-    format_bytes,
-    load_config,
-    run_polling_forever,
-    setup_logging,
-    verify_bot_access,
-)
 from handlers.converter import router as converter_router
 from handlers.currency import router as currency_router
+from handlers.fallback import router as fallback_router
 from handlers.pollinations import router as pollinations_router
 from handlers.rembg import router as rembg_router
 from handlers.shazam import router as shazam_router
@@ -29,23 +22,44 @@ from handlers.tinyurl import router as tinyurl_router
 from handlers.translate import router as translate_router
 from handlers.weather import router as weather_router
 from handlers.wikipedia import router as wikipedia_router
-from ui.main_menu import (
-    main_menu_text,
-    safe_edit_menu,
-    save_keyboard,
-    save_menu_text,
-    services_keyboard,
-)
+from ui.main_menu import main_menu_text, safe_edit_menu, services_keyboard
+
+DEFAULT_POLLING_RESTART_DELAY_SECONDS = 8
+DEFAULT_TELEGRAM_UPLOAD_LIMIT_MB = 50
+DEFAULT_TELEGRAM_DOWNLOAD_LIMIT_MB = 20
+
+
+def _read_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _read_bot_token() -> str:
+    token = os.getenv("BOT_TOKEN", "").strip()
+    if not token:
+        raise ValueError("BOT_TOKEN topilmadi. .env fayliga token yozing.")
+    return token
+
+
+def _mb_to_bytes(value: int) -> int:
+    return max(1, value) * 1024 * 1024
 
 
 def register_core_handlers(
-    dispatcher: Dispatcher, app: DirectLinkDownloaderBot, max_file_bytes: int
+    dispatcher: Dispatcher,
+    upload_limit_bytes: int,
+    download_limit_bytes: int,
 ) -> None:
     @dispatcher.message(CommandStart())
     async def start_handler(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer(
-            main_menu_text(max_file_bytes),
+            main_menu_text(upload_limit_bytes, download_limit_bytes),
             parse_mode="HTML",
             reply_markup=services_keyboard(),
         )
@@ -54,7 +68,7 @@ def register_core_handlers(
     async def menu_handler(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer(
-            main_menu_text(max_file_bytes),
+            main_menu_text(upload_limit_bytes, download_limit_bytes),
             parse_mode="HTML",
             reply_markup=services_keyboard(),
         )
@@ -66,118 +80,90 @@ def register_core_handlers(
             "/start - asosiy menyu\n"
             "/menu - xizmatlar menyusi\n"
             "/help - yordam\n"
-            "/limits - joriy limitlar\n"
-            "/process - downloader holati\n"
-            "/stats - umumiy statistika\n"
-            "/cancel - joriy yuklashni bekor qilish\n\n"
-            "Link formatlari: direct HTTP/HTTPS yoki YouTube."
+            "/limits - Telegram free limitlar\n\n"
+            "Botda faqat free servislar ishlatiladi."
         )
         await message.answer(text)
 
     @dispatcher.message(Command("limits"))
     async def limits_handler(message: Message) -> None:
-        config = app.config
-        allowed_mode = (
-            "Hamma foydalanuvchi"
-            if not config.allowed_user_ids
-            else "Faqat ruxsat berilgan ID lar"
-        )
-        speed_mode = "dual-worker" if config.download_workers >= 2 else "single-worker"
         text = (
-            f"Fayl limiti: {format_bytes(config.max_file_bytes)}\n"
-            f"Global parallel yuklash: {config.concurrent_downloads}\n"
-            f"Per-user limit: {config.per_user_download_limit}\n"
-            f"Download workers: {config.download_workers} ({speed_mode})\n"
-            f"Parallel min size: {format_bytes(config.parallel_download_min_bytes)}\n"
-            f"Connector limit: {config.http_connector_limit}/{config.http_connector_limit_per_host}\n"
-            f"Upload chunk: {config.upload_chunk_kb} KB\n"
-            f"Send progress interval: {config.send_progress_interval_seconds:.1f}s\n"
-            f"YouTube: {'on' if config.youtube_enabled else 'off'}\n"
-            f"YouTube timeout: {config.youtube_timeout_seconds}s\n"
-            "Send mode: auto media + fallback document\n"
-            f"Retry: {config.max_retries} marta\n"
-            f"Kirish rejimi: {allowed_mode}"
+            "<b>Telegram Free Cloud Limitlari</b>\n"
+            f"Bot upload limiti: <b>{upload_limit_bytes // (1024 * 1024)} MB</b>\n"
+            f"Bot download (getFile) limiti: <b>{download_limit_bytes // (1024 * 1024)} MB</b>\n\n"
+            "Eslatma: bu qiymatlar cloud Bot API uchun aniqlik maqsadida ko'rsatilgan."
         )
-        await message.answer(text)
-
-    @dispatcher.message(Command("process"))
-    async def process_handler(message: Message) -> None:
-        await message.answer(app.build_process_snapshot())
-
-    @dispatcher.message(Command("stats"))
-    async def stats_handler(message: Message) -> None:
-        text = (
-            f"Tugallangan: {app.completed_downloads}\n"
-            f"Xatoliklar: {app.failed_downloads}\n"
-            f"Jami yuklangan: {format_bytes(app.total_downloaded_bytes)}\n"
-            f"Active users: {len(app.active_per_user)}"
-        )
-        await message.answer(text)
-
-    @dispatcher.message(Command("cancel"))
-    async def cancel_handler(message: Message) -> None:
-        user_id = message.from_user.id if message.from_user else None
-        cancelled = await app.cancel_user_task(user_id)
-        if cancelled:
-            await message.answer("Joriy yuklash bekor qilindi.")
-        else:
-            await message.answer("Bekor qilish uchun faol yuklash topilmadi.")
-
-    @dispatcher.callback_query(F.data == "services:save")
-    async def save_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
-        await state.clear()
-        await callback.answer()
-        await safe_edit_menu(callback, save_menu_text(max_file_bytes), save_keyboard())
+        await message.answer(text, parse_mode="HTML")
 
     @dispatcher.callback_query(F.data == "services:back")
     async def back_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
         await callback.answer()
         await safe_edit_menu(
-            callback, main_menu_text(max_file_bytes), services_keyboard()
+            callback,
+            main_menu_text(upload_limit_bytes, download_limit_bytes),
+            services_keyboard(),
         )
 
-    @dispatcher.message(F.text | F.caption)
-    async def downloader_handler(message: Message, state: FSMContext) -> None:
-        if message.text and message.text.lstrip().startswith("/"):
-            return
-        if await state.get_state():
-            return
-        await app.handle_link(message)
+
+async def run_polling_forever(
+    dispatcher: Dispatcher, bot: Bot, restart_delay_seconds: int
+) -> None:
+    logger = logging.getLogger("Polling")
+    while True:
+        try:
+            await dispatcher.start_polling(
+                bot, allowed_updates=dispatcher.resolve_used_update_types()
+            )
+            logger.info("Polling normal to'xtadi.")
+            break
+        except asyncio.CancelledError:
+            raise
+        except KeyboardInterrupt:
+            logger.info("Polling to'xtatildi.")
+            break
+        except (TelegramNetworkError, aiohttp.ClientError, asyncio.TimeoutError) as error:
+            logger.exception("Polling tarmoq xatosi: %s", error)
+            await asyncio.sleep(restart_delay_seconds)
+        except Exception as error:  # noqa: BLE001
+            logger.exception("Kutilmagan polling xatosi: %s", error)
+            await asyncio.sleep(restart_delay_seconds)
 
 
 async def main() -> None:
+    load_dotenv(override=True)
+    logging.basicConfig(
+        level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
     try:
-        config = load_config()
+        bot_token = _read_bot_token()
     except ValueError as error:
-        logging.basicConfig(
-            level=logging.ERROR,
-            format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        )
         logging.getLogger("Main").error(str(error))
         return
 
-    setup_logging(config)
-    logger = logging.getLogger("Main")
-    lock = InstanceLock(config.lock_file)
-    try:
-        lock.acquire()
-    except Exception as error:  # noqa: BLE001
-        logger.error(str(error))
-        return
+    upload_limit_mb = _read_int(
+        "TELEGRAM_FREE_UPLOAD_LIMIT_MB", DEFAULT_TELEGRAM_UPLOAD_LIMIT_MB
+    )
+    download_limit_mb = _read_int(
+        "TELEGRAM_FREE_DOWNLOAD_LIMIT_MB", DEFAULT_TELEGRAM_DOWNLOAD_LIMIT_MB
+    )
+    polling_restart_delay_seconds = max(
+        3,
+        _read_int(
+            "POLLING_RESTART_DELAY_SECONDS", DEFAULT_POLLING_RESTART_DELAY_SECONDS
+        ),
+    )
 
-    logger.info("Xizmatlar e-bot ishga tushmoqda")
-    logger.info("Temp dir: %s", config.temp_dir.resolve())
-    logger.info("Max size: %s", format_bytes(config.max_file_bytes))
-    logger.info("Lock file: %s", config.lock_file.resolve())
-
-    app = DirectLinkDownloaderBot(config)
-    await app.startup()
-
-    bot_session = build_bot_session(config)
-    bot = Bot(token=config.bot_token, session=bot_session)
+    bot = Bot(token=bot_token)
     dispatcher = Dispatcher(storage=MemoryStorage())
-    register_core_handlers(dispatcher, app, config.max_file_bytes)
+    register_core_handlers(
+        dispatcher,
+        _mb_to_bytes(upload_limit_mb),
+        _mb_to_bytes(download_limit_mb),
+    )
+
     dispatcher.include_router(weather_router)
     dispatcher.include_router(currency_router)
     dispatcher.include_router(converter_router)
@@ -188,18 +174,12 @@ async def main() -> None:
     dispatcher.include_router(wikipedia_router)
     dispatcher.include_router(rembg_router)
     dispatcher.include_router(pollinations_router)
+    dispatcher.include_router(fallback_router)
 
     try:
-        await verify_bot_access(bot)
-        await run_polling_forever(dispatcher, bot, config)
-    except ValueError as error:
-        logger.critical(str(error))
-    except (TelegramNetworkError, aiohttp.ClientError, asyncio.TimeoutError) as error:
-        logger.exception("Pollingda tarmoq xatosi: %s", error)
+        await run_polling_forever(dispatcher, bot, polling_restart_delay_seconds)
     finally:
-        await app.shutdown()
         await bot.session.close()
-        lock.release()
 
 
 if __name__ == "__main__":

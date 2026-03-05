@@ -2,11 +2,13 @@ import asyncio
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote_plus
 
 import aiohttp
 
 LIBRETRANSLATE_TIMEOUT_SECONDS = 20
 DEFAULT_LIBRETRANSLATE_ENDPOINT = "https://translate.argosopentech.com/translate"
+MYMEMORY_ENDPOINT = "https://api.mymemory.translated.net/get"
 ALLOWED_LANGUAGE_CODES = {"auto", "uz", "en", "ru", "zh-cn"}
 
 LANG_LABELS = {
@@ -56,6 +58,16 @@ def _libre_code(code: str) -> str:
     if normalized == "zh-cn":
         return "zh"
     return normalized
+
+
+def _guess_source_language(text: str) -> str:
+    for ch in text:
+        if "\u4e00" <= ch <= "\u9fff":
+            return "zh-cn"
+    for ch in text:
+        if "\u0400" <= ch <= "\u04ff":
+            return "ru"
+    return "en"
 
 
 def _translate_google_sync(text: str, source: str, target: str) -> TranslationResult:
@@ -137,6 +149,56 @@ async def _translate_libre(
     )
 
 
+async def _translate_mymemory(
+    text: str, source: str, target: str
+) -> TranslationResult:
+    source_code = _libre_code(source)
+    if source_code == "auto":
+        source_code = _libre_code(_guess_source_language(text))
+    target_code = _libre_code(target)
+    if source_code == target_code:
+        return TranslationResult(
+            source=_normalize_language(source_code),
+            target=_normalize_language(target_code),
+            text=text,
+            pronunciation="",
+            engine="mymemory",
+        )
+    langpair = f"{source_code}|{target_code}"
+    params = {"q": text, "langpair": langpair}
+    timeout = aiohttp.ClientTimeout(total=LIBRETRANSLATE_TIMEOUT_SECONDS)
+    headers = {"Accept": "application/json, text/plain, */*"}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.get(MYMEMORY_ENDPOINT, params=params) as response:
+            body = await response.json(content_type=None)
+            if response.status >= 400:
+                raise RuntimeError(
+                    f"MyMemory API xatosi: HTTP {response.status}. {quote_plus(text[:40])}"
+                )
+
+    if not isinstance(body, dict):
+        raise RuntimeError("MyMemory API noto'g'ri formatda javob qaytardi.")
+    status = int(body.get("responseStatus", 0) or 0)
+    if status != 200:
+        details = str(body.get("responseDetails", "")).strip()
+        raise RuntimeError(f"MyMemory API xatosi: {details or status}")
+    response_data = body.get("responseData")
+    if not isinstance(response_data, dict):
+        raise RuntimeError("MyMemory API responseData topilmadi.")
+    translated = str(response_data.get("translatedText", "")).strip()
+    if not translated:
+        raise RuntimeError("MyMemory tarjima javobi bo'sh qaytdi.")
+
+    detected = _normalize_language(source if source != "auto" else source_code)
+    return TranslationResult(
+        source=detected,
+        target=_normalize_language(target),
+        text=translated,
+        pronunciation="",
+        engine="mymemory",
+    )
+
+
 def _clean_text(text: str) -> str:
     clean_text = (text or "").strip()
     if not clean_text:
@@ -173,13 +235,20 @@ async def translate_text(
         )
 
     if normalized_engine == "libretranslate":
-        return await _translate_libre(
-            clean_text,
-            normalized_source,
-            normalized_target,
-            libre_endpoint,
-            libre_api_key,
-        )
+        try:
+            return await _translate_libre(
+                clean_text,
+                normalized_source,
+                normalized_target,
+                libre_endpoint,
+                libre_api_key,
+            )
+        except Exception:
+            return await _translate_mymemory(
+                clean_text,
+                normalized_source,
+                normalized_target,
+            )
 
     try:
         return await _translate_libre(
@@ -190,11 +259,25 @@ async def translate_text(
             libre_api_key,
         )
     except Exception:  # noqa: BLE001
-        pass
+        try:
+            return await _translate_mymemory(
+                clean_text,
+                normalized_source,
+                normalized_target,
+            )
+        except Exception:
+            pass
 
-    return await asyncio.to_thread(
-        _translate_google_sync,
-        clean_text,
-        normalized_source,
-        normalized_target,
-    )
+    try:
+        return await asyncio.to_thread(
+            _translate_google_sync,
+            clean_text,
+            normalized_source,
+            normalized_target,
+        )
+    except Exception:
+        return await _translate_mymemory(
+            clean_text,
+            normalized_source,
+            normalized_target,
+        )

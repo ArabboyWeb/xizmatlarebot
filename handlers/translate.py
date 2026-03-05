@@ -21,12 +21,22 @@ logger = logging.getLogger(__name__)
 PAIRS: tuple[tuple[str, str], ...] = (
     ("auto", "uz"),
     ("auto", "en"),
+    ("auto", "ru"),
+    ("auto", "zh-cn"),
     ("uz", "en"),
     ("en", "uz"),
     ("uz", "ru"),
     ("ru", "uz"),
+    ("uz", "zh-cn"),
+    ("zh-cn", "uz"),
+    ("en", "ru"),
+    ("ru", "en"),
+    ("en", "zh-cn"),
+    ("zh-cn", "en"),
+    ("ru", "zh-cn"),
+    ("zh-cn", "ru"),
 )
-ENGINES = ("auto", "google", "deeplx")
+ENGINES = ("auto", "google", "libre")
 
 
 class TranslateState(StatesGroup):
@@ -34,7 +44,7 @@ class TranslateState(StatesGroup):
 
 
 def _engine_label(engine: str, active_engine: str) -> str:
-    title = {"auto": "Auto", "google": "Google", "deeplx": "DeepLX"}.get(
+    title = {"auto": "Auto", "google": "Google", "libre": "Libre"}.get(
         engine, engine
     )
     return f"{'[' if engine == active_engine else ''}{title}{']' if engine == active_engine else ''}"
@@ -61,6 +71,16 @@ def translate_keyboard(source: str, target: str, engine: str) -> InlineKeyboardM
             ],
             [
                 InlineKeyboardButton(
+                    text=_pair_label("auto", "ru", active_pair),
+                    callback_data="translate:pair:auto:ru",
+                ),
+                InlineKeyboardButton(
+                    text=_pair_label("auto", "zh-cn", active_pair),
+                    callback_data="translate:pair:auto:zh-cn",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text=_pair_label("uz", "en", active_pair),
                     callback_data="translate:pair:uz:en",
                 ),
@@ -81,6 +101,46 @@ def translate_keyboard(source: str, target: str, engine: str) -> InlineKeyboardM
             ],
             [
                 InlineKeyboardButton(
+                    text=_pair_label("uz", "zh-cn", active_pair),
+                    callback_data="translate:pair:uz:zh-cn",
+                ),
+                InlineKeyboardButton(
+                    text=_pair_label("zh-cn", "uz", active_pair),
+                    callback_data="translate:pair:zh-cn:uz",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=_pair_label("en", "ru", active_pair),
+                    callback_data="translate:pair:en:ru",
+                ),
+                InlineKeyboardButton(
+                    text=_pair_label("ru", "en", active_pair),
+                    callback_data="translate:pair:ru:en",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=_pair_label("en", "zh-cn", active_pair),
+                    callback_data="translate:pair:en:zh-cn",
+                ),
+                InlineKeyboardButton(
+                    text=_pair_label("zh-cn", "en", active_pair),
+                    callback_data="translate:pair:zh-cn:en",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=_pair_label("ru", "zh-cn", active_pair),
+                    callback_data="translate:pair:ru:zh-cn",
+                ),
+                InlineKeyboardButton(
+                    text=_pair_label("zh-cn", "ru", active_pair),
+                    callback_data="translate:pair:zh-cn:ru",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text=_engine_label("auto", engine),
                     callback_data="translate:engine:auto",
                 ),
@@ -89,8 +149,8 @@ def translate_keyboard(source: str, target: str, engine: str) -> InlineKeyboardM
                     callback_data="translate:engine:google",
                 ),
                 InlineKeyboardButton(
-                    text=_engine_label("deeplx", engine),
-                    callback_data="translate:engine:deeplx",
+                    text=_engine_label("libre", engine),
+                    callback_data="translate:engine:libre",
                 ),
             ],
             [InlineKeyboardButton(text="Orqaga", callback_data="services:back")],
@@ -121,9 +181,10 @@ def _get_settings(data: dict[str, object]) -> tuple[str, str, str]:
 
 def _prompt_text(source: str, target: str, engine: str) -> str:
     return (
-        "<b>Tarjimon (Googletrans/DeepLX)</b>\n"
+        "<b>Tarjimon (Googletrans/LibreTranslate)</b>\n"
         f"Yo'nalish: <b>{html.escape(language_name(source))} -> {html.escape(language_name(target))}</b>\n"
         f"Engine: <b>{html.escape(engine.upper())}</b>\n\n"
+        "Qo'llab-quvvatlanadigan tillar: UZ, EN, RU, ZH-CN.\n"
         "Tarjima qilish uchun matn yuboring."
     )
 
@@ -220,7 +281,8 @@ async def translate_text_handler(message: Message, state: FSMContext) -> None:
     source, target, engine = _get_settings(await state.get_data())
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-            result = await translate_text(text, source, target, engine)
+            resolved_engine = "libretranslate" if engine == "libre" else engine
+            result = await translate_text(text, source, target, resolved_engine)
     except Exception as error:  # noqa: BLE001
         await message.answer(
             f"<b>Tarjima xatosi</b>\n{html.escape(str(error))}",

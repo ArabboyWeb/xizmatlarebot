@@ -1,5 +1,6 @@
 from .converter import router as converter_router
 from .currency import router as currency_router
+from .fallback import router as fallback_router
 from .pollinations import router as pollinations_router
 from .rembg import router as rembg_router
 from .shazam import router as shazam_router
@@ -12,6 +13,7 @@ from .wikipedia import router as wikipedia_router
 __all__ = [
     "converter_router",
     "currency_router",
+    "fallback_router",
     "pollinations_router",
     "rembg_router",
     "shazam_router",

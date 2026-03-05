@@ -20,9 +20,6 @@ def services_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Saqlash", callback_data="services:save"),
-            ],
-            [
                 InlineKeyboardButton(text="Ob-havo", callback_data="services:weather"),
                 InlineKeyboardButton(text="Valyuta", callback_data="services:currency"),
             ],
@@ -56,45 +53,22 @@ def services_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def save_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Orqaga", callback_data="services:back"),
-            ]
-        ]
-    )
-
-
-def main_menu_text(max_file_bytes: int) -> str:
+def main_menu_text(upload_limit_bytes: int, download_limit_bytes: int) -> str:
     return (
         "<b>Asosiy menu</b>\n"
         "Kerakli xizmatni tanlang.\n\n"
-        "<b>YouTube downloader</b> - YouTube linkdan video yuklaydi\n"
-        "<b>Saqlash</b> - direct linkdan yuklab chatga yuboradi\n"
         "<b>Ob-havo</b> - shahar yoki lokatsiya boyicha ob-havo\n"
         "<b>Valyuta</b> - songgi kurslar\n"
         "<b>Konvertor</b> - hujjat va rasm konvertatsiyasi\n"
         "<b>1secmail</b> - temporary email inbox\n"
         "<b>TinyURL</b> - uzun linkni qisqartirish\n"
         "<b>ShazamIO</b> - audio trekni aniqlash\n"
-        "<b>Tarjimon</b> - Googletrans/DeepLX\n"
+        "<b>Tarjimon</b> - Googletrans/LibreTranslate\n"
         "<b>Wikipedia</b> - tezkor ensiklopediya qidiruvi\n"
         "<b>Rembg</b> - rasm fonini olib tashlash\n"
         "<b>Pollinations AI</b> - AI rasm generatsiya\n\n"
-        f"Saqlash limiti: <b>{_format_bytes(max_file_bytes)}</b>"
-    )
-
-
-def save_menu_text(max_file_bytes: int) -> str:
-    return (
-        "<b>Saqlash xizmati</b>\n"
-        "Direct HTTP/HTTPS yoki YouTube link yuboring.\n"
-        "Bot faylni yuklab, sizga qayta yuboradi.\n\n"
-        f"Limit: <b>{_format_bytes(max_file_bytes)}</b>\n"
-        "Misol:\n"
-        "<code>https://example.com/file.zip</code>\n"
-        "<code>https://youtu.be/dQw4w9WgXcQ</code>"
+        f"Telegram free upload limiti: <b>{_format_bytes(upload_limit_bytes)}</b>\n"
+        f"Telegram free download limiti: <b>{_format_bytes(download_limit_bytes)}</b>"
     )
 
 

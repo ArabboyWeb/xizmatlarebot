@@ -15,6 +15,7 @@ from aiogram.types import (
 from aiogram.utils.chat_action import ChatActionSender
 
 from services.tempmail_client import (
+    TempMailMessagePreview,
     create_mailbox,
     fetch_inbox,
     read_message,
@@ -89,7 +90,7 @@ async def _ensure_mailbox(state: FSMContext) -> str:
     return mailbox
 
 
-def _build_inbox_text(email: str, messages: list[object]) -> str:
+def _build_inbox_text(email: str, messages: list[TempMailMessagePreview]) -> str:
     header = (
         "<b>1secmail Inbox</b>\n"
         f"<b>Email:</b> <code>{html.escape(email)}</code>\n\n"
@@ -221,11 +222,10 @@ async def tempmail_read_message_handler(message: Message, state: FSMContext) -> 
     if not raw or raw.startswith("/"):
         return
 
-    try:
-        message_id = int(raw)
-    except ValueError:
+    message_id = raw
+    if len(message_id) < 1 or len(message_id) > 128:
         await message.answer(
-            "Faqat xabar ID raqamini yuboring.",
+            "To'g'ri message ID yuboring.",
             reply_markup=read_keyboard(),
         )
         return
