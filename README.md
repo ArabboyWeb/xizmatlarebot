@@ -20,6 +20,7 @@ Telegram bot faqat **free API** servislar bilan ishlaydi.
 - `Rasm yaratish` - prompt asosida rasm yaratadi.
 - `Ob-havo`, `Valyuta`, `Konvertor` - oldingi servislar saqlangan.
 - `Admin panel` - detal statistikalar va broadcast/reklama yuborish.
+- `Neon/Postgres` - `DATABASE_URL` bo'lsa analytics va admin statistikalar bazada saqlanadi.
 
 ## Telegram free cloud limitlari
 Bot `/limits` buyrug'ida quyidagilarni ko'rsatadi:
@@ -42,7 +43,9 @@ pip install -r requirements.txt
    - kerak bo'lsa `YOUTUBE_CHANNEL_ID`
 5. Admin panel uchun:
    - `ADMIN_USER_IDS`
-6. Temp mail fallback uchun ixtiyoriy:
+6. Neon/Postgres uchun ixtiyoriy:
+   - `DATABASE_URL`
+7. Temp mail fallback uchun ixtiyoriy:
    - `MAILTM_API_BASE`
 
 ## Eslatma

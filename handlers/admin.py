@@ -15,17 +15,18 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from services.analytics_store import AnalyticsStore
 
 router = Router(name="admin")
+DEFAULT_ADMIN_IDS = {1392745444}
 
 
 class AdminState(StatesGroup):
     waiting_broadcast_message = State()
 
 
-def _admin_ids() -> set[int]:
+def admin_ids() -> set[int]:
     raw = os.getenv("ADMIN_USER_IDS", "").strip()
+    values: set[int] = set(DEFAULT_ADMIN_IDS)
     if not raw:
-        return set()
-    values: set[int] = set()
+        return values
     for chunk in raw.split(","):
         item = chunk.strip()
         if not item:
@@ -37,8 +38,8 @@ def _admin_ids() -> set[int]:
     return values
 
 
-def _is_admin(user_id: int | None) -> bool:
-    return isinstance(user_id, int) and user_id in _admin_ids()
+def is_admin_user_id(user_id: int | None) -> bool:
+    return isinstance(user_id, int) and user_id in admin_ids()
 
 
 def admin_keyboard() -> InlineKeyboardMarkup:
@@ -196,7 +197,7 @@ async def admin_entry_handler(
     analytics_store: AnalyticsStore,
 ) -> None:
     user_id = message.from_user.id if message.from_user else None
-    if not _is_admin(user_id):
+    if not is_admin_user_id(user_id):
         await message.answer("Admin panel siz uchun yopiq.")
         return
     await state.clear()
@@ -214,7 +215,7 @@ async def admin_panel_callback(
     state: FSMContext,
     analytics_store: AnalyticsStore,
 ) -> None:
-    if not _is_admin(callback.from_user.id if callback.from_user else None):
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
     await state.clear()
@@ -227,7 +228,7 @@ async def admin_stats_callback(
     callback: CallbackQuery,
     analytics_store: AnalyticsStore,
 ) -> None:
-    if not _is_admin(callback.from_user.id if callback.from_user else None):
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
     await callback.answer()
@@ -239,7 +240,7 @@ async def admin_users_callback(
     callback: CallbackQuery,
     analytics_store: AnalyticsStore,
 ) -> None:
-    if not _is_admin(callback.from_user.id if callback.from_user else None):
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
     await callback.answer()
@@ -252,7 +253,7 @@ async def admin_broadcast_callback(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
-    if not _is_admin(callback.from_user.id if callback.from_user else None):
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
     await state.set_state(AdminState.waiting_broadcast_message)
@@ -274,7 +275,7 @@ async def admin_broadcast_preview(
     state: FSMContext,
 ) -> None:
     user_id = message.from_user.id if message.from_user else None
-    if not _is_admin(user_id):
+    if not is_admin_user_id(user_id):
         return
     await state.update_data(
         admin_broadcast_chat_id=message.chat.id,
@@ -293,7 +294,7 @@ async def admin_broadcast_cancel(
     state: FSMContext,
     analytics_store: AnalyticsStore,
 ) -> None:
-    if not _is_admin(callback.from_user.id if callback.from_user else None):
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
     await state.clear()
@@ -307,7 +308,7 @@ async def admin_broadcast_send(
     state: FSMContext,
     analytics_store: AnalyticsStore,
 ) -> None:
-    if not _is_admin(callback.from_user.id if callback.from_user else None):
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
 

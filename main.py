@@ -12,6 +12,7 @@ from aiogram.types import CallbackQuery, Message
 from dotenv import load_dotenv
 
 from handlers.admin import router as admin_router
+from handlers.admin import is_admin_user_id
 from handlers.converter import router as converter_router
 from handlers.currency import router as currency_router
 from handlers.fallback import router as fallback_router
@@ -63,19 +64,29 @@ def register_core_handlers(
     @dispatcher.message(CommandStart())
     async def start_handler(message: Message, state: FSMContext) -> None:
         await state.clear()
+        is_admin = is_admin_user_id(message.from_user.id if message.from_user else None)
         await message.answer(
-            main_menu_text(upload_limit_bytes, download_limit_bytes),
+            main_menu_text(
+                upload_limit_bytes,
+                download_limit_bytes,
+                is_admin=is_admin,
+            ),
             parse_mode="HTML",
-            reply_markup=services_keyboard(),
+            reply_markup=services_keyboard(is_admin=is_admin),
         )
 
     @dispatcher.message(Command("menu"))
     async def menu_handler(message: Message, state: FSMContext) -> None:
         await state.clear()
+        is_admin = is_admin_user_id(message.from_user.id if message.from_user else None)
         await message.answer(
-            main_menu_text(upload_limit_bytes, download_limit_bytes),
+            main_menu_text(
+                upload_limit_bytes,
+                download_limit_bytes,
+                is_admin=is_admin,
+            ),
             parse_mode="HTML",
-            reply_markup=services_keyboard(),
+            reply_markup=services_keyboard(is_admin=is_admin),
         )
 
     @dispatcher.message(Command("help"))
@@ -103,10 +114,15 @@ def register_core_handlers(
     async def back_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
         await callback.answer()
+        is_admin = is_admin_user_id(callback.from_user.id if callback.from_user else None)
         await safe_edit_menu(
             callback,
-            main_menu_text(upload_limit_bytes, download_limit_bytes),
-            services_keyboard(),
+            main_menu_text(
+                upload_limit_bytes,
+                download_limit_bytes,
+                is_admin=is_admin,
+            ),
+            services_keyboard(is_admin=is_admin),
         )
 
 
@@ -163,6 +179,12 @@ async def main() -> None:
     bot = Bot(token=bot_token)
     dispatcher = Dispatcher(storage=MemoryStorage())
     analytics_store = AnalyticsStore()
+    try:
+        await analytics_store.startup()
+    except Exception as error:  # noqa: BLE001
+        logging.getLogger("Main").error("Analytics storage ishga tushmadi: %s", error)
+        await bot.session.close()
+        return
     analytics_middleware = AnalyticsMiddleware(analytics_store)
     dispatcher.message.outer_middleware(analytics_middleware)
     dispatcher.callback_query.outer_middleware(analytics_middleware)
@@ -191,6 +213,7 @@ async def main() -> None:
     try:
         await run_polling_forever(dispatcher, bot, polling_restart_delay_seconds)
     finally:
+        await analytics_store.shutdown()
         await bot.session.close()
 
 
