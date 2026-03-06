@@ -18,7 +18,6 @@ from handlers.currency import router as currency_router
 from handlers.fallback import router as fallback_router
 from handlers.jobs import router as jobs_router
 from handlers.pollinations import router as pollinations_router
-from handlers.rembg import router as rembg_router
 from handlers.saver import router as saver_router
 from handlers.shazam import router as shazam_router
 from handlers.tempmail import router as tempmail_router
@@ -206,7 +205,6 @@ async def main() -> None:
     dispatcher.include_router(jobs_router)
     dispatcher.include_router(youtube_search_router)
     dispatcher.include_router(wikipedia_router)
-    dispatcher.include_router(rembg_router)
     dispatcher.include_router(pollinations_router)
     dispatcher.include_router(fallback_router)
 

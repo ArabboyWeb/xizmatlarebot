@@ -98,9 +98,13 @@ def _prompt_text(model: str, size: tuple[int, int]) -> str:
     return (
         "<b>Rasm yaratish</b>\n"
         f"Model: <b>{html.escape(model.upper())}</b>\n"
-        f"Size: <b>{size[0]}x{size[1]}</b>\n\n"
+        f"O'lcham: <b>{size[0]}x{size[1]}</b>\n\n"
         "Prompt yuboring, bot rasm yaratib qaytaradi."
     )
+
+
+def _public_generation_error() -> str:
+    return "Rasmni yaratib bo'lmadi. Promptni o'zgartirib yoki qisqartirib qayta urinib ko'ring."
 
 
 async def _safe_edit(
@@ -214,28 +218,39 @@ async def pollinations_prompt_handler(message: Message, state: FSMContext) -> No
                 seed=seed,
             )
     except Exception as error:  # noqa: BLE001
+        logger.warning("Rasm yaratish xatosi: %s", error)
         await message.answer(
-            f"<b>Rasm yaratish xatosi</b>\n{html.escape(str(error))}",
+            f"<b>Rasm yaratish xatosi</b>\n{_public_generation_error()}",
             parse_mode="HTML",
             reply_markup=pollinations_keyboard(model, size),
         )
         return
 
-    file_name = f"pollinations_{model}_{size[0]}x{size[1]}_{seed}.png"
+    file_name = f"rasm_{model}_{size[0]}x{size[1]}_{seed}.png"
     photo = BufferedInputFile(image, filename=file_name)
     caption = (
         "<b>Rasm tayyor</b>\n"
         f"Model: <b>{html.escape(model.upper())}</b>\n"
-        f"Size: <b>{size[0]}x{size[1]}</b>\n"
+        f"O'lcham: <b>{size[0]}x{size[1]}</b>\n"
         f"Seed: <code>{seed}</code>\n"
         f"Prompt: <code>{html.escape(prompt[:180])}</code>"
     )
-    await message.answer_photo(
-        photo=photo,
-        caption=caption,
-        parse_mode="HTML",
-        reply_markup=pollinations_result_keyboard(),
-    )
+    try:
+        await message.answer_photo(
+            photo=photo,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=pollinations_result_keyboard(),
+        )
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Rasm photo yuborilmadi, document fallback ishladi: %s", error)
+        document = BufferedInputFile(image, filename=file_name)
+        await message.answer_document(
+            document=document,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=pollinations_result_keyboard(),
+        )
     await state.set_state(PollinationsState.waiting_prompt)
 
 

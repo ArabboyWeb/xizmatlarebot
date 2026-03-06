@@ -39,11 +39,8 @@ def services_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Ish qidirish", callback_data="services:jobs"),
         ],
         [
-            InlineKeyboardButton(text="Maqola qidirish", callback_data="services:wikipedia"),
-            InlineKeyboardButton(text="Fonni olib tashlash", callback_data="services:rembg"),
-        ],
-        [
-            InlineKeyboardButton(text="Rasm yaratish", callback_data="services:pollinations")
+            InlineKeyboardButton(text="Wikipedia", callback_data="services:wikipedia"),
+            InlineKeyboardButton(text="Rasm yaratish", callback_data="services:pollinations"),
         ],
     ]
     if is_admin:
@@ -62,8 +59,8 @@ def main_menu_text(
     text = (
         "<b>Xizmatlar menyusi</b>\n"
         "Kerakli bo'limni tanlang.\n\n"
-        "<b>Saqlash</b> - link yoki YouTube videoni chatga olib keladi\n"
-        "<b>YouTube</b> - kanal ichida qidirish va natijadan yuklash\n"
+        "<b>Saqlash</b> - direct fayl linkini chatga olib keladi\n"
+        "<b>YouTube</b> - qidirish, video yuklash va audio saqlash\n"
         "<b>Ob-havo</b> - shahar bo'yicha ob-havo\n"
         "<b>Valyuta</b> - asosiy kurslar\n"
         "<b>Konvertor</b> - fayl va rasm formatini almashtirish\n"
@@ -72,8 +69,7 @@ def main_menu_text(
         "<b>Musiqa qidirish</b> - qo'shiq nomini topish\n"
         "<b>Tarjimon</b> - tezkor tarjima\n"
         "<b>Ish qidirish</b> - vakansiyalarni topish\n"
-        "<b>Maqola qidirish</b> - qisqa ensiklopediya javobi\n"
-        "<b>Fonni olib tashlash</b> - rasm fonini tozalash\n"
+        "<b>Wikipedia</b> - qisqa ensiklopediya javobi\n"
         "<b>Rasm yaratish</b> - promptdan rasm chizish"
     )
     if is_admin:

@@ -3,7 +3,7 @@
 Telegram bot faqat **free API** servislar bilan ishlaydi.
 
 ## Yangi servislar
-- `Saqlash` - direct link yoki YouTube linkni yuklab, faylni chatga qaytaradi.
+- `Saqlash` - faqat direct fayl linkini yuklab, faylni chatga qaytaradi.
 - `1secmail` - temporary email yaratish, inbox ko'rish, message ID bilan xabar o'qish.
   - Agar 1secmail bloklansa, bot avtomatik `mail.tm` ga fallback qiladi.
 - `TinyURL` - uzun URL ni qisqartirish (`TINYURL_API_TOKEN` bo'lsa official API, bo'lmasa legacy free endpoint).
@@ -14,9 +14,8 @@ Telegram bot faqat **free API** servislar bilan ishlaydi.
   - `en`
   - `ru`
   - `zh`
-- `YouTube` - kanal ichida video qidiradi va natijadan to'g'ridan-to'g'ri yuklaydi.
-- `Maqola qidirish` - maqola summary qidirish.
-- `Fonni olib tashlash` - rasm fonini olib tashlash.
+- `YouTube` - qidiruv, link bo'yicha yuklash, video sifati tanlash va audio saqlash.
+- `Wikipedia` - maqola summary qidirish.
 - `Rasm yaratish` - prompt asosida rasm yaratadi.
 - `Ob-havo`, `Valyuta`, `Konvertor` - oldingi servislar saqlangan.
 - `Admin panel` - detal statistikalar va broadcast/reklama yuborish.
@@ -40,7 +39,6 @@ pip install -r requirements.txt
 3. TinyURL official API ishlatmoqchi bo'lsangiz `TINYURL_API_TOKEN` ni kiriting.
 4. RapidAPI servislar uchun:
    - `RAPIDAPI_KEY`
-   - kerak bo'lsa `YOUTUBE_CHANNEL_ID`
 5. Admin panel uchun:
    - `ADMIN_USER_IDS`
 6. Neon/Postgres uchun ixtiyoriy:
@@ -51,6 +49,7 @@ pip install -r requirements.txt
 ## Eslatma
 - RapidAPI bo'sh yoki blok bo'lsa, bot imkon bor joyda free fallback bilan ishlaydi.
 - YouTube downloader uchun `yt-dlp` ishlatiladi.
+- `Saqlash` oddiy veb-sahifa emas, to'g'ridan-to'g'ri fayl linklari uchun mo'ljallangan.
 
 ## Ishga tushirish
 ```bash

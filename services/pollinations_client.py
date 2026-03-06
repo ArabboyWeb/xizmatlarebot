@@ -26,7 +26,7 @@ def _placeholder_image(prompt: str, width: int, height: int) -> bytes:
     image = Image.new("RGB", (width, height), color=(18, 24, 38))
     draw = ImageDraw.Draw(image)
     draw.rectangle((16, 16, width - 16, height - 16), outline=(90, 120, 170), width=2)
-    draw.text((28, 28), "Pollinations unavailable", fill=(220, 230, 255))
+    draw.text((28, 28), "Rasm servisi vaqtincha band", fill=(220, 230, 255))
     draw.text((28, 58), "Prompt:", fill=(160, 180, 220))
 
     snippet = prompt[:240]
@@ -103,10 +103,7 @@ async def generate_image(
                 if response.status >= 500:
                     return _placeholder_image(clean_prompt, w, h)
                 if response.status >= 400:
-                    body = (await response.text())[:180]
-                    raise RuntimeError(
-                        f"Pollinations API xatosi: HTTP {response.status}. {body}"
-                    )
+                    raise RuntimeError("Rasm servisi vaqtincha ishlamayapti.")
     except (aiohttp.ClientError, TimeoutError):
         return _placeholder_image(clean_prompt, w, h)
 

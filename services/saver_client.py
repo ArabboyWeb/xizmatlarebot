@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import mimetypes
 import os
@@ -12,11 +11,6 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import aiohttp
-
-try:
-    import yt_dlp
-except Exception:  # pragma: no cover
-    yt_dlp = None
 
 SAVER_TMP_DIR = Path(__file__).resolve().parent.parent / "downloads_tmp" / "saver"
 DEFAULT_USER_AGENT = (
@@ -97,6 +91,22 @@ def _content_disposition_name(header_value: str) -> str:
     return ""
 
 
+def _looks_like_web_page(
+    *,
+    path: str,
+    content_type: str,
+    content_disposition: str,
+) -> bool:
+    if "attachment" in (content_disposition or "").lower():
+        return False
+    suffix = Path(path).suffix.lower()
+    if content_type.startswith("text/html"):
+        return True
+    if content_type.startswith("text/") and not suffix:
+        return True
+    return False
+
+
 def _target_dir() -> Path:
     target = SAVER_TMP_DIR / uuid.uuid4().hex
     target.mkdir(parents=True, exist_ok=True)
@@ -112,7 +122,7 @@ async def cleanup_download(downloaded: DownloadedFile | None) -> None:
         shutil.rmtree(downloaded.path.parent, ignore_errors=True)
 
 
-async def _download_direct(url: str, max_bytes: int) -> DownloadedFile:
+async def download_direct_url(url: str, max_bytes: int) -> DownloadedFile:
     target_dir = _target_dir()
     timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
     headers = {
@@ -129,8 +139,9 @@ async def _download_direct(url: str, max_bytes: int) -> DownloadedFile:
                     raise RuntimeError("Fayl limitdan katta.")
 
                 parsed = urlparse(str(response.url))
+                content_disposition = response.headers.get("Content-Disposition", "")
                 file_name = _content_disposition_name(
-                    response.headers.get("Content-Disposition", "")
+                    content_disposition
                 )
                 if not file_name:
                     file_name = Path(parsed.path).name or "download.bin"
@@ -138,6 +149,12 @@ async def _download_direct(url: str, max_bytes: int) -> DownloadedFile:
                 content_type = (
                     response.headers.get("Content-Type", "").split(";", maxsplit=1)[0]
                 ).strip() or "application/octet-stream"
+                if _looks_like_web_page(
+                    path=parsed.path,
+                    content_type=content_type,
+                    content_disposition=content_disposition,
+                ):
+                    raise ValueError("Bu oddiy sahifa linki. To'g'ridan-to'g'ri fayl link yuboring.")
                 guessed_ext = mimetypes.guess_extension(content_type) or ""
                 suffix = Path(file_name).suffix
                 if not suffix and guessed_ext:
@@ -170,124 +187,11 @@ async def _download_direct(url: str, max_bytes: int) -> DownloadedFile:
         raise
 
 
-def _pick_youtube_format(info: dict[str, object], max_bytes: int) -> str:
-    formats = info.get("formats")
-    if not isinstance(formats, list):
-        raise RuntimeError("YouTube formatlari topilmadi.")
-
-    candidates: list[tuple[tuple[int, int, int, int], str]] = []
-    for item in formats:
-        if not isinstance(item, dict):
-            continue
-        format_id = str(item.get("format_id", "")).strip()
-        if not format_id:
-            continue
-        if str(item.get("vcodec", "none")) == "none":
-            continue
-        if str(item.get("acodec", "none")) == "none":
-            continue
-
-        ext = str(item.get("ext", "")).strip().lower()
-        size = item.get("filesize") or item.get("filesize_approx")
-        size_value = int(size) if isinstance(size, (int, float)) else 0
-        if size_value and size_value > max_bytes:
-            continue
-
-        height = int(item.get("height") or 0)
-        bitrate = int(item.get("tbr") or 0)
-        known_size_penalty = 0 if size_value else 1
-        ext_penalty = 0 if ext == "mp4" else 1
-        candidates.append(
-            (
-                (
-                    known_size_penalty,
-                    ext_penalty,
-                    -height,
-                    -bitrate,
-                ),
-                format_id,
-            )
-        )
-
-    if not candidates:
-        raise RuntimeError("Limit ichida YouTube video topilmadi.")
-
-    candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
-
-
-def _download_youtube_sync(url: str, max_bytes: int) -> DownloadedFile:
-    if yt_dlp is None:
-        raise RuntimeError("YouTube yuklash moduli o'rnatilmagan.")
-
-    target_dir = _target_dir()
-    try:
-        base_options = {
-            "quiet": True,
-            "no_warnings": True,
-            "noprogress": True,
-            "noplaylist": True,
-            "restrictfilenames": True,
-            "windowsfilenames": True,
-            "cachedir": False,
-            "socket_timeout": 40,
-        }
-        with yt_dlp.YoutubeDL(base_options) as ydl:
-            info = ydl.extract_info(url, download=False)
-
-        if not isinstance(info, dict):
-            raise RuntimeError("YouTube ma'lumotlari topilmadi.")
-        if info.get("_type") == "playlist":
-            raise RuntimeError("Playlist emas, bitta video link yuboring.")
-
-        format_id = _pick_youtube_format(info, max_bytes)
-        output_template = str(target_dir / "%(id)s.%(ext)s")
-        download_options = {
-            **base_options,
-            "format": format_id,
-            "outtmpl": output_template,
-            "nopart": True,
-        }
-        with yt_dlp.YoutubeDL(download_options) as ydl:
-            ydl.download([url])
-
-        files = [item for item in target_dir.iterdir() if item.is_file()]
-        if not files:
-            raise RuntimeError("YouTube video yuklanmadi.")
-        output = max(files, key=lambda item: item.stat().st_mtime)
-        size = output.stat().st_size
-        if size > max_bytes:
-            raise RuntimeError("Video limitdan katta.")
-
-        title = str(info.get("title", "")).strip() or output.stem
-        safe_name = _safe_name(f"{title}{output.suffix}", fallback=output.name)
-        final_output = output
-        if output.name != safe_name:
-            final_output = output.with_name(safe_name)
-            output.rename(final_output)
-
-        content_type = (
-            mimetypes.guess_type(final_output.name)[0] or "application/octet-stream"
-        )
-        return DownloadedFile(
-            path=final_output,
-            file_name=final_output.name,
-            size=size,
-            content_type=content_type,
-            source="youtube",
-        )
-    except Exception:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise
-
-
-async def _download_youtube(url: str, max_bytes: int) -> DownloadedFile:
-    return await asyncio.to_thread(_download_youtube_sync, url, max_bytes)
-
-
 async def download_url(url: str, max_bytes: int | None = None) -> DownloadedFile:
     clean_url = extract_first_url(url)
-    limit = max_bytes if isinstance(max_bytes, int) and max_bytes > 0 else saver_limit_bytes()
     if is_youtube_url(clean_url):
-        return await _download_youtube(clean_url, limit)
-    return await _download_direct(clean_url, limit)
+        raise ValueError("YouTube linklari uchun YouTube bo'limidan foydalaning.")
+    limit = (
+        max_bytes if isinstance(max_bytes, int) and max_bytes > 0 else saver_limit_bytes()
+    )
+    return await download_direct_url(clean_url, limit)

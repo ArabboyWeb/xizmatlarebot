@@ -4,7 +4,6 @@ from .currency import router as currency_router
 from .fallback import router as fallback_router
 from .jobs import router as jobs_router
 from .pollinations import router as pollinations_router
-from .rembg import router as rembg_router
 from .saver import router as saver_router
 from .shazam import router as shazam_router
 from .tempmail import router as tempmail_router
@@ -21,7 +20,6 @@ __all__ = [
     "fallback_router",
     "jobs_router",
     "pollinations_router",
-    "rembg_router",
     "saver_router",
     "shazam_router",
     "tempmail_router",

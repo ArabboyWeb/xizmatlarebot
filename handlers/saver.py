@@ -22,6 +22,7 @@ from services.saver_client import (
     DownloadedFile,
     cleanup_download,
     detect_send_kind,
+    is_youtube_url,
     download_url,
     saver_limit_bytes,
 )
@@ -48,11 +49,10 @@ def save_prompt_text() -> str:
     limit_text = _format_bytes(saver_limit_bytes())
     return (
         "<b>Saqlash</b>\n"
-        "Direct link yoki YouTube link yuboring. Bot faylni yuklab, shu chatga qaytaradi.\n\n"
+        "To'g'ridan-to'g'ri fayl linkini yuboring. Bot uni yuklab, shu chatga qaytaradi.\n\n"
         f"Maksimal hajm: <b>{limit_text}</b>\n"
-        "Misollar:\n"
-        "<code>https://example.com/file.pdf</code>\n"
-        "<code>https://youtu.be/dQw4w9WgXcQ</code>"
+        "Misol:\n"
+        "<code>https://example.com/file.pdf</code>"
     )
 
 
@@ -89,7 +89,7 @@ async def _safe_edit(
             logger.warning("Saver edit xatosi: %s", error)
 
 
-async def _send_downloaded_file(
+async def send_downloaded_file(
     message: Message,
     downloaded: DownloadedFile,
     *,
@@ -133,12 +133,26 @@ async def _send_downloaded_file(
     except Exception as error:  # noqa: BLE001
         logger.warning("Native media yuborish ishlamadi, document fallback: %s", error)
 
+    file_input = FSInputFile(downloaded.path, filename=downloaded.file_name)
+
     await message.answer_document(
         document=file_input,
         caption=caption,
         parse_mode="HTML",
         reply_markup=reply_markup,
     )
+
+
+def _public_save_error(error: Exception) -> str:
+    message = str(error or "").strip()
+    lowered = message.lower()
+    if isinstance(error, ValueError) and message:
+        return message
+    if "limit" in lowered or "katta" in lowered:
+        return "Fayl limitdan katta."
+    if "bo'sh" in lowered:
+        return "Fayl bo'sh qaytdi."
+    return "Linkni yuklab bo'lmadi. To'g'ridan-to'g'ri fayl link yuboring."
 
 
 async def download_and_send_url(
@@ -166,7 +180,7 @@ async def download_and_send_url(
             bot=message.bot,
             chat_id=message.chat.id,
         ):
-            await _send_downloaded_file(
+            await send_downloaded_file(
                 message,
                 downloaded,
                 title=title,
@@ -175,9 +189,10 @@ async def download_and_send_url(
         succeeded = True
         return downloaded
     except Exception as error:  # noqa: BLE001
+        logger.warning("Saqlash xatosi: %s", error)
         with contextlib.suppress(TelegramBadRequest):
             await progress_message.edit_text(
-                f"<b>Saqlash xatosi</b>\n{html.escape(str(error))}",
+                f"<b>Saqlash xatosi</b>\n{html.escape(_public_save_error(error))}",
                 parse_mode="HTML",
                 reply_markup=reply_markup or save_keyboard(),
             )
@@ -212,6 +227,12 @@ async def save_url_handler(
 ) -> None:
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
+        return
+    if is_youtube_url(text):
+        await message.answer(
+            "YouTube linklari uchun YouTube bo'limidan foydalaning.",
+            reply_markup=save_keyboard(),
+        )
         return
 
     try:
