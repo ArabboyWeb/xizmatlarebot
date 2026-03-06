@@ -59,7 +59,8 @@ async def _show_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await _safe_edit(
         callback,
         (
-            "<b>Shazam Auto-Complete (RapidAPI)</b>\n"
+            "<b>Shazam Auto-Complete</b>\n"
+            "RapidAPI ishlamasa free fallback avtomatik ishlaydi.\n"
             "Qo'shiq nomini yuboring.\n"
             "Masalan: <code>kiss the</code>"
         ),

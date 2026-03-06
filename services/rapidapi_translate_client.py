@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.rapidapi_client import rapidapi_post_form
+from services.translate_client import translate_text as free_translate_text
 
 TRANSLATOR_HOST = "text-translator2.p.rapidapi.com"
 TRANSLATOR_URL = "https://text-translator2.p.rapidapi.com/translate"
@@ -45,6 +46,20 @@ def _extract_text(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _fallback_language(code: str) -> str:
+    normalized = _normalize_lang(code)
+    if normalized == "zh":
+        return "zh-cn"
+    return normalized
+
+
+def _result_language(code: str) -> str:
+    normalized = _normalize_lang(code)
+    if normalized.startswith("zh"):
+        return "zh"
+    return normalized
+
+
 async def translate_text(text: str, source: str, target: str) -> TranslationResult:
     clean_text = (text or "").strip()
     if not clean_text:
@@ -61,17 +76,38 @@ async def translate_text(text: str, source: str, target: str) -> TranslationResu
     if src == dst:
         return TranslationResult(source=src, target=dst, text=clean_text)
 
-    payload = await rapidapi_post_form(
-        host=TRANSLATOR_HOST,
-        url=TRANSLATOR_URL,
-        data={
-            "source_language": src,
-            "target_language": dst,
-            "text": clean_text,
-        },
-    )
-    translated = _extract_text(payload)
-    if not translated:
-        raise RuntimeError("Tarjima natijasi bo'sh qaytdi.")
+    rapidapi_error: Exception | None = None
+    try:
+        payload = await rapidapi_post_form(
+            host=TRANSLATOR_HOST,
+            url=TRANSLATOR_URL,
+            data={
+                "source_language": src,
+                "target_language": dst,
+                "text": clean_text,
+            },
+        )
+        translated = _extract_text(payload)
+        if translated:
+            return TranslationResult(source=src, target=dst, text=translated)
+    except Exception as error:  # noqa: BLE001
+        rapidapi_error = error
 
-    return TranslationResult(source=src, target=dst, text=translated)
+    try:
+        fallback_result = await free_translate_text(
+            clean_text,
+            _fallback_language(src),
+            _fallback_language(dst),
+        )
+        return TranslationResult(
+            source=_result_language(fallback_result.source),
+            target=_result_language(fallback_result.target),
+            text=fallback_result.text,
+        )
+    except Exception as fallback_error:  # noqa: BLE001
+        if rapidapi_error is not None:
+            raise RuntimeError(
+                f"Tarjima ishlamadi. RapidAPI: {rapidapi_error}. "
+                f"Fallback: {fallback_error}."
+            ) from fallback_error
+        raise RuntimeError("Tarjima natijasi bo'sh qaytdi.") from fallback_error

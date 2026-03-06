@@ -59,7 +59,8 @@ async def _show_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await _safe_edit(
         callback,
         (
-            "<b>JSearch Jobs (RapidAPI)</b>\n"
+            "<b>Jobs Search</b>\n"
+            "RapidAPI ishlamasa free public jobs fallback ishlaydi.\n"
             "Kasb va joylashuv bo'yicha qidiring.\n"
             "Masalan: <code>developer jobs in chicago</code>"
         ),

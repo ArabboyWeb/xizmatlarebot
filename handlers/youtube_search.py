@@ -91,7 +91,8 @@ async def youtube_entry_handler(callback: CallbackQuery, state: FSMContext) -> N
     await _safe_edit(
         callback,
         (
-            "<b>YouTube Channel Search (RapidAPI)</b>\n"
+            "<b>YouTube Channel Search</b>\n"
+            "RapidAPI ishlamasa YouTube HTML fallback ishlaydi.\n"
             "Bu servis channel ichida video qidiradi.\n\n"
             f"Joriy channel ID: <code>{html.escape(current or 'sozlanmagan')}</code>"
         ),
