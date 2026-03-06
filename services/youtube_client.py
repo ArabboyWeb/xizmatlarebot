@@ -7,14 +7,17 @@ from pathlib import Path
 from typing import Any
 
 try:
+    import imageio_ffmpeg
+except Exception:  # pragma: no cover
+    imageio_ffmpeg = None
+
+try:
     import yt_dlp
 except Exception:  # pragma: no cover
     yt_dlp = None
 
 from services.saver_client import (
-    AUDIO_EXTENSIONS,
     DownloadedFile,
-    VIDEO_EXTENSIONS,
     _safe_name,
     _target_dir,
     extract_first_url,
@@ -37,7 +40,19 @@ def _ydl_base_options() -> dict[str, Any]:
         "cachedir": False,
         "socket_timeout": 40,
         "skip_download": True,
+        "retries": 2,
+        "fragment_retries": 2,
     }
+
+
+def _ffmpeg_location() -> str:
+    if imageio_ffmpeg is None:
+        return ""
+    try:
+        location = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # pragma: no cover
+        return ""
+    return location if location and Path(location).exists() else ""
 
 
 def _duration_text(seconds: Any) -> str:
@@ -83,114 +98,39 @@ def _normalize_entries(info: dict[str, Any], query: str, limit: int) -> dict[str
     return {"query": query, "videos": videos}
 
 
-def _pick_video_format(
-    info: dict[str, Any],
-    *,
-    quality: str,
-    max_bytes: int,
-) -> str:
-    formats = info.get("formats")
-    if not isinstance(formats, list):
-        raise RuntimeError("YouTube formatlari topilmadi.")
+def _video_format_selector(quality: str, *, ffmpeg_location: str) -> str:
+    target_height = 1080 if quality == "best" else int(quality)
+    progressive = [
+        f"best[ext=mp4][height<={target_height}]",
+        f"best[height<={target_height}][ext=mp4]",
+        "18" if target_height >= 360 else "",
+        f"best[height<={target_height}]",
+        "best[ext=mp4]",
+        "best",
+    ]
+    if not ffmpeg_location:
+        return "/".join(part for part in progressive if part)
 
-    target_height = 0 if quality == "best" else int(quality)
-    candidates: list[tuple[tuple[int, int, int, int], str]] = []
-    for item in formats:
-        if not isinstance(item, dict):
-            continue
-        format_id = str(item.get("format_id", "")).strip()
-        if not format_id:
-            continue
-        if str(item.get("vcodec", "none")) == "none":
-            continue
-        if str(item.get("acodec", "none")) == "none":
-            continue
-
-        ext = str(item.get("ext", "")).strip().lower()
-        if ext and ext not in {ext.strip(".") for ext in VIDEO_EXTENSIONS}:
-            pass
-
-        height = int(item.get("height") or 0)
-        if target_height and height and height > target_height:
-            continue
-
-        size = item.get("filesize") or item.get("filesize_approx")
-        size_value = int(size) if isinstance(size, (int, float)) else 0
-        if size_value and size_value > max_bytes:
-            continue
-
-        tbr = int(item.get("tbr") or 0)
-        quality_penalty = abs(target_height - height) if target_height and height else 0
-        known_size_penalty = 0 if size_value else 1
-        ext_penalty = 0 if ext == "mp4" else 1
-        candidates.append(
-            (
-                (
-                    known_size_penalty,
-                    quality_penalty,
-                    ext_penalty,
-                    -tbr,
-                ),
-                format_id,
-            )
-        )
-
-    if not candidates:
-        raise RuntimeError("Tanlangan sifatda video topilmadi.")
-
-    candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
+    merged = [
+        f"bestvideo[ext=mp4][height<={target_height}]+bestaudio[ext=m4a]",
+        f"bestvideo[height<={target_height}]+bestaudio",
+    ]
+    return "/".join(part for part in [*merged, *progressive] if part)
 
 
-def _pick_audio_format(
-    info: dict[str, Any],
-    *,
-    bitrate: str,
-    max_bytes: int,
-) -> str:
-    formats = info.get("formats")
-    if not isinstance(formats, list):
-        raise RuntimeError("YouTube audio formatlari topilmadi.")
+def _audio_format_selector(*, ffmpeg_location: str) -> str:
+    if ffmpeg_location:
+        return "bestaudio[ext=m4a]/bestaudio"
+    return "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio"
 
-    target_bitrate = int(bitrate)
-    candidates: list[tuple[tuple[int, int, int], str]] = []
-    for item in formats:
-        if not isinstance(item, dict):
-            continue
-        format_id = str(item.get("format_id", "")).strip()
-        if not format_id:
-            continue
-        if str(item.get("acodec", "none")) == "none":
-            continue
-        if str(item.get("vcodec", "none")) != "none":
-            continue
 
-        ext = str(item.get("ext", "")).strip().lower()
-        size = item.get("filesize") or item.get("filesize_approx")
-        size_value = int(size) if isinstance(size, (int, float)) else 0
-        if size_value and size_value > max_bytes:
-            continue
-
-        abr = int(item.get("abr") or item.get("tbr") or 0)
-        bitrate_penalty = abs(target_bitrate - abr) if abr else 9999
-        known_size_penalty = 0 if size_value else 1
-        ext_penalty = 0 if ext in {"m4a", "mp3"} else 1
-        candidates.append(
-            (
-                (
-                    known_size_penalty,
-                    bitrate_penalty,
-                    ext_penalty,
-                ),
-                format_id,
-            )
-        )
-
-    if not candidates:
-        raise RuntimeError("Tanlangan sifatda audio topilmadi.")
-
-    candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
+def _downloaded_files(target_dir: Path) -> list[Path]:
+    ignored_suffixes = {".part", ".ytdl", ".json", ".jpg", ".jpeg", ".png", ".webp"}
+    return [
+        item
+        for item in target_dir.iterdir()
+        if item.is_file() and item.suffix.lower() not in ignored_suffixes
+    ]
 
 
 def _download_youtube_sync(
@@ -206,42 +146,46 @@ def _download_youtube_sync(
 
     target_dir = _target_dir()
     try:
-        base_options = _ydl_base_options()
-        base_options["skip_download"] = True
-        with yt_dlp.YoutubeDL(base_options) as ydl:
-            info = ydl.extract_info(url, download=False)
+        ffmpeg_location = _ffmpeg_location()
+        download_options = _ydl_base_options()
+        download_options.update(
+            {
+                "skip_download": False,
+                "format": (
+                    _audio_format_selector(ffmpeg_location=ffmpeg_location)
+                    if mode == "audio"
+                    else _video_format_selector(
+                        quality,
+                        ffmpeg_location=ffmpeg_location,
+                    )
+                ),
+                "outtmpl": str(target_dir / "%(id)s.%(ext)s"),
+                "nopart": True,
+            }
+        )
+        if ffmpeg_location:
+            download_options["ffmpeg_location"] = ffmpeg_location
+        if mode == "video" and ffmpeg_location:
+            download_options["merge_output_format"] = "mp4"
+        if mode == "audio" and ffmpeg_location:
+            download_options["postprocessors"] = [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": audio_bitrate,
+                }
+            ]
+            download_options["keepvideo"] = False
+
+        with yt_dlp.YoutubeDL(download_options) as ydl:
+            info = ydl.extract_info(url, download=True)
 
         if not isinstance(info, dict):
             raise RuntimeError("YouTube ma'lumotlari topilmadi.")
         if info.get("_type") == "playlist":
             raise RuntimeError("Playlist emas, bitta video link yuboring.")
 
-        if mode == "audio":
-            format_id = _pick_audio_format(
-                info,
-                bitrate=audio_bitrate,
-                max_bytes=max_bytes,
-            )
-        else:
-            format_id = _pick_video_format(
-                info,
-                quality=quality,
-                max_bytes=max_bytes,
-            )
-
-        download_options = _ydl_base_options()
-        download_options.update(
-            {
-                "skip_download": False,
-                "format": format_id,
-                "outtmpl": str(target_dir / "%(id)s.%(ext)s"),
-                "nopart": True,
-            }
-        )
-        with yt_dlp.YoutubeDL(download_options) as ydl:
-            ydl.download([url])
-
-        files = [item for item in target_dir.iterdir() if item.is_file()]
+        files = _downloaded_files(target_dir)
         if not files:
             raise RuntimeError("YouTube fayli yuklanmadi.")
 
@@ -260,6 +204,14 @@ def _download_youtube_sync(
         content_type = (
             mimetypes.guess_type(final_output.name)[0] or "application/octet-stream"
         )
+        if mode == "audio" and not content_type.startswith("audio/"):
+            suffix = final_output.suffix.lower()
+            if suffix == ".mp3":
+                content_type = "audio/mpeg"
+            elif suffix in {".m4a", ".mp4"}:
+                content_type = "audio/mp4"
+            elif suffix in {".webm", ".opus"}:
+                content_type = "audio/webm"
         return DownloadedFile(
             path=final_output,
             file_name=final_output.name,
