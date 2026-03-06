@@ -1,4 +1,5 @@
 import asyncio
+import html
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -87,7 +88,7 @@ def _translate_google_sync(text: str, source: str, target: str) -> TranslationRe
     return TranslationResult(
         source=_normalize_language(str(getattr(result, "src", source) or source)),
         target=_normalize_language(str(getattr(result, "dest", target) or target)),
-        text=translated,
+        text=html.unescape(translated),
         pronunciation=str(getattr(result, "pronunciation", "") or "").strip(),
         engine="google",
     )
@@ -134,7 +135,7 @@ async def _translate_libre(
     if not isinstance(body, dict):
         raise RuntimeError("LibreTranslate API noto'g'ri formatda javob qaytardi.")
 
-    translated = str(body.get("translatedText", "")).strip()
+    translated = html.unescape(str(body.get("translatedText", "")).strip())
     if not translated:
         raise RuntimeError("LibreTranslate tarjima javobi bo'sh qaytdi.")
 
@@ -185,7 +186,7 @@ async def _translate_mymemory(
     response_data = body.get("responseData")
     if not isinstance(response_data, dict):
         raise RuntimeError("MyMemory API responseData topilmadi.")
-    translated = str(response_data.get("translatedText", "")).strip()
+    translated = html.unescape(str(response_data.get("translatedText", "")).strip())
     if not translated:
         raise RuntimeError("MyMemory tarjima javobi bo'sh qaytdi.")
 

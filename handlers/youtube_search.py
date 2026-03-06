@@ -14,6 +14,8 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
+from handlers.saver import download_and_send_url
+from services.analytics_store import AnalyticsStore
 from services.youtube_rapid_client import search_channel_videos
 
 router = Router(name="youtube_search")
@@ -57,6 +59,25 @@ def youtube_result_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def youtube_results_keyboard(videos: list[dict[str, str]]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for idx, _video in enumerate(videos[:6], start=1):
+        current_row.append(
+            InlineKeyboardButton(
+                text=f"Yuklab olish {idx}",
+                callback_data=f"youtube:download:{idx - 1}",
+            )
+        )
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    rows.extend(youtube_result_keyboard().inline_keyboard)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 async def _safe_edit(
     callback: CallbackQuery, text: str, reply_markup: InlineKeyboardMarkup
 ) -> None:
@@ -91,9 +112,8 @@ async def youtube_entry_handler(callback: CallbackQuery, state: FSMContext) -> N
     await _safe_edit(
         callback,
         (
-            "<b>YouTube Channel Search</b>\n"
-            "RapidAPI ishlamasa YouTube HTML fallback ishlaydi.\n"
-            "Bu servis channel ichida video qidiradi.\n\n"
+            "<b>YouTube</b>\n"
+            "Bu bo'lim kanal ichida video qidiradi va natijadan yuklaydi.\n\n"
             f"Joriy channel ID: <code>{html.escape(current or 'sozlanmagan')}</code>"
         ),
         youtube_menu_keyboard(),
@@ -178,6 +198,7 @@ def _build_youtube_text(
     if not videos:
         rows.append("Natija topilmadi.")
     else:
+        rows.append("Pastdagi tugmalar bilan videoni yuklab oling.\n")
         for idx, video in enumerate(videos[:8], start=1):
             title = html.escape(video.get("title", "Video"))
             url = html.escape(video.get("url", ""))
@@ -221,17 +242,85 @@ async def youtube_query_message(message: Message, state: FSMContext) -> None:
         )
         return
 
+    videos = list(result.get("videos", []))
+    await state.update_data(youtube_results=videos)
     await state.set_state(YoutubeSearchState.waiting_query)
     await message.answer(
         _build_youtube_text(
             result.get("channel_id", channel_id),
             result.get("query", query),
-            list(result.get("videos", [])),
+            videos,
             str(result.get("next", "")),
         ),
         parse_mode="HTML",
-        reply_markup=youtube_result_keyboard(),
+        reply_markup=youtube_results_keyboard(videos),
     )
+
+
+@router.callback_query(F.data.startswith("youtube:download:"))
+async def youtube_download_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+    analytics_store: AnalyticsStore,
+) -> None:
+    if callback.message is None:
+        await callback.answer("Xabar topilmadi", show_alert=True)
+        return
+
+    raw = callback.data or ""
+    parts = raw.split(":")
+    if len(parts) != 3:
+        await callback.answer("Video topilmadi", show_alert=True)
+        return
+    try:
+        index = int(parts[2])
+    except ValueError:
+        await callback.answer("Video topilmadi", show_alert=True)
+        return
+
+    data = await state.get_data()
+    videos = data.get("youtube_results")
+    if not isinstance(videos, list) or index < 0 or index >= len(videos):
+        await callback.answer("Natijalar eskirdi. Qayta qidiring.", show_alert=True)
+        return
+
+    video = videos[index]
+    if not isinstance(video, dict):
+        await callback.answer("Video topilmadi", show_alert=True)
+        return
+
+    url = str(video.get("url", "")).strip()
+    title = str(video.get("title", "")).strip() or f"Video {index + 1}"
+    if not url:
+        await callback.answer("Video linki topilmadi", show_alert=True)
+        return
+
+    await callback.answer("Yuklanmoqda...")
+    try:
+        downloaded = await download_and_send_url(
+            callback.message,
+            url,
+            title=title,
+            reply_markup=youtube_results_keyboard(videos),
+        )
+    except Exception:
+        return
+
+    if callback.from_user is not None:
+        await analytics_store.record_download(
+            user_id=int(callback.from_user.id),
+            username=str(callback.from_user.username or "").strip(),
+            full_name=" ".join(
+                part
+                for part in [
+                    str(callback.from_user.first_name or "").strip(),
+                    str(callback.from_user.last_name or "").strip(),
+                ]
+                if part
+            ).strip(),
+            source=downloaded.source,
+            size=downloaded.size,
+        )
 
 
 @router.message(YoutubeSearchState.waiting_channel_id)

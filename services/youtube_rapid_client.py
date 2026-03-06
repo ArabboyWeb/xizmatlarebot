@@ -185,10 +185,7 @@ async def search_channel_videos(
         videos = await _fallback_channel_search(clean_channel_id, clean_query)
     except Exception as fallback_error:  # noqa: BLE001
         if rapidapi_error is not None:
-            raise RuntimeError(
-                f"YouTube qidiruvi ishlamadi. RapidAPI: {rapidapi_error}. "
-                f"Fallback: {fallback_error}."
-            ) from fallback_error
+            raise RuntimeError("YouTube qidiruvi vaqtincha ishlamayapti.") from fallback_error
         raise
 
     return {

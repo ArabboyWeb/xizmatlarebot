@@ -11,12 +11,14 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, Message
 from dotenv import load_dotenv
 
+from handlers.admin import router as admin_router
 from handlers.converter import router as converter_router
 from handlers.currency import router as currency_router
 from handlers.fallback import router as fallback_router
 from handlers.jobs import router as jobs_router
 from handlers.pollinations import router as pollinations_router
 from handlers.rembg import router as rembg_router
+from handlers.saver import router as saver_router
 from handlers.shazam import router as shazam_router
 from handlers.tempmail import router as tempmail_router
 from handlers.tinyurl import router as tinyurl_router
@@ -24,6 +26,7 @@ from handlers.translate import router as translate_router
 from handlers.weather import router as weather_router
 from handlers.wikipedia import router as wikipedia_router
 from handlers.youtube_search import router as youtube_search_router
+from services.analytics_store import AnalyticsMiddleware, AnalyticsStore
 from ui.main_menu import main_menu_text, safe_edit_menu, services_keyboard
 
 DEFAULT_POLLING_RESTART_DELAY_SECONDS = 8
@@ -82,18 +85,17 @@ def register_core_handlers(
             "/start - asosiy menyu\n"
             "/menu - xizmatlar menyusi\n"
             "/help - yordam\n"
-            "/limits - Telegram free limitlar\n\n"
-            "Botda faqat free servislar ishlatiladi."
+            "/limits - saqlash limitlari\n\n"
+            "Kerakli xizmatni menyudan tanlang."
         )
         await message.answer(text)
 
     @dispatcher.message(Command("limits"))
     async def limits_handler(message: Message) -> None:
         text = (
-            "<b>Telegram Free Cloud Limitlari</b>\n"
-            f"Bot upload limiti: <b>{upload_limit_bytes // (1024 * 1024)} MB</b>\n"
-            f"Bot download (getFile) limiti: <b>{download_limit_bytes // (1024 * 1024)} MB</b>\n\n"
-            "Eslatma: bu qiymatlar cloud Bot API uchun aniqlik maqsadida ko'rsatilgan."
+            "<b>Saqlash limitlari</b>\n"
+            f"Chatga qaytariladigan maksimal fayl: <b>{upload_limit_bytes // (1024 * 1024)} MB</b>\n"
+            f"Botga yuboriladigan fayl limiti: <b>{download_limit_bytes // (1024 * 1024)} MB</b>"
         )
         await message.answer(text, parse_mode="HTML")
 
@@ -160,12 +162,18 @@ async def main() -> None:
 
     bot = Bot(token=bot_token)
     dispatcher = Dispatcher(storage=MemoryStorage())
+    analytics_store = AnalyticsStore()
+    analytics_middleware = AnalyticsMiddleware(analytics_store)
+    dispatcher.message.outer_middleware(analytics_middleware)
+    dispatcher.callback_query.outer_middleware(analytics_middleware)
     register_core_handlers(
         dispatcher,
         _mb_to_bytes(upload_limit_mb),
         _mb_to_bytes(download_limit_mb),
     )
 
+    dispatcher.include_router(admin_router)
+    dispatcher.include_router(saver_router)
     dispatcher.include_router(weather_router)
     dispatcher.include_router(currency_router)
     dispatcher.include_router(converter_router)

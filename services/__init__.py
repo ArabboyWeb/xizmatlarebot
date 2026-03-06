@@ -1,6 +1,7 @@
 """Service package exports."""
 
 __all__ = [
+    "analytics_store",
     "converter_tools",
     "currency_client",
     "jsearch_client",
@@ -10,6 +11,7 @@ __all__ = [
     "rapidapi_translate_client",
     "rembg_client",
     "shazam_client",
+    "saver_client",
     "tempmail_client",
     "tinyurl_client",
     "translate_client",

@@ -47,6 +47,19 @@ def _placeholder_image(prompt: str, width: int, height: int) -> bytes:
     return buffer.getvalue()
 
 
+def _normalize_image_bytes(content: bytes) -> bytes:
+    if not content:
+        return b""
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            prepared = image.convert("RGB")
+            buffer = io.BytesIO()
+            prepared.save(buffer, format="PNG")
+            return buffer.getvalue()
+    except Exception:
+        return b""
+
+
 async def generate_image(
     prompt: str,
     *,
@@ -83,8 +96,10 @@ async def generate_image(
             async with session.get(url, params=params) as response:
                 if response.status == 200:
                     content = await response.read()
-                    if content:
-                        return content
+                    normalized = _normalize_image_bytes(content)
+                    if normalized:
+                        return normalized
+                    return _placeholder_image(clean_prompt, w, h)
                 if response.status >= 500:
                     return _placeholder_image(clean_prompt, w, h)
                 if response.status >= 400:

@@ -3,30 +3,28 @@
 Telegram bot faqat **free API** servislar bilan ishlaydi.
 
 ## Yangi servislar
+- `Saqlash` - direct link yoki YouTube linkni yuklab, faylni chatga qaytaradi.
 - `1secmail` - temporary email yaratish, inbox ko'rish, message ID bilan xabar o'qish.
   - Agar 1secmail bloklansa, bot avtomatik `mail.tm` ga fallback qiladi.
 - `TinyURL` - uzun URL ni qisqartirish (`TINYURL_API_TOKEN` bo'lsa official API, bo'lmasa legacy free endpoint).
-- `Shazam Auto-Complete` - RapidAPI ishlasa o'sha ishlatiladi, bo'lmasa Deezer fallback.
-- `JSearch Jobs` - RapidAPI ishlasa o'sha ishlatiladi, bo'lmasa free public jobs fallback.
-- `Tarjimon` - RapidAPI Text-Translator2 ishlasa o'sha ishlatiladi, bo'lmasa free translator fallback. Tillar:
+- `Musiqa qidirish` - qo'shiq nomi bo'yicha natija topadi.
+- `Ish qidirish` - public vakansiyalarni topadi.
+- `Tarjimon` - UZ/EN/RU/ZH oralig'ida tarjima qiladi. Tillar:
   - `uz`
   - `en`
   - `ru`
   - `zh`
-- `YouTube Channel Search` - RapidAPI ishlasa o'sha ishlatiladi, bo'lmasa YouTube HTML fallback.
-- `Wikipedia` - maqola summary qidirish.
-- `Rembg` - rasm fonini olib tashlash.
-- `Pollinations AI` - free AI image generation.
-  - Agar Pollinations API vaqtincha ishlamasa, bot fallback image qaytaradi (service jim qolmaydi).
+- `YouTube` - kanal ichida video qidiradi va natijadan to'g'ridan-to'g'ri yuklaydi.
+- `Maqola qidirish` - maqola summary qidirish.
+- `Fonni olib tashlash` - rasm fonini olib tashlash.
+- `Rasm yaratish` - prompt asosida rasm yaratadi.
 - `Ob-havo`, `Valyuta`, `Konvertor` - oldingi servislar saqlangan.
-
-## Muhim o'zgarish
-- `Saver/Downloader` (direct link/YouTube yuklash) **olib tashlandi**.
+- `Admin panel` - detal statistikalar va broadcast/reklama yuborish.
 
 ## Telegram free cloud limitlari
 Bot `/limits` buyrug'ida quyidagilarni ko'rsatadi:
-- Upload limiti: `TELEGRAM_FREE_UPLOAD_LIMIT_MB` (default `50 MB`)
-- Download (getFile) limiti: `TELEGRAM_FREE_DOWNLOAD_LIMIT_MB` (default `20 MB`)
+- Saqlash/upload limiti: `TELEGRAM_FREE_UPLOAD_LIMIT_MB` (default `50 MB`)
+- Botga yuboriladigan fayl limiti: `TELEGRAM_FREE_DOWNLOAD_LIMIT_MB` (default `20 MB`)
 
 Bu qiymatlar `.env` orqali sozlanadi.
 
@@ -42,13 +40,14 @@ pip install -r requirements.txt
 4. RapidAPI servislar uchun:
    - `RAPIDAPI_KEY`
    - kerak bo'lsa `YOUTUBE_CHANNEL_ID`
-5. Temp mail fallback uchun ixtiyoriy:
+5. Admin panel uchun:
+   - `ADMIN_USER_IDS`
+6. Temp mail fallback uchun ixtiyoriy:
    - `MAILTM_API_BASE`
 
-## RapidAPI eslatma
-- Agar RapidAPI obunasi bo'lmasa, bot avtomatik free fallbackga o'tadi.
-- Agar aniq RapidAPI javobi kerak bo'lsa, RapidAPI dashboard orqali o'sha API ga obuna bo'lish kerak.
-- Free plan mavjud bo'lsa free obuna qiling; pullik bo'lsa ishlatmaslik mumkin.
+## Eslatma
+- RapidAPI bo'sh yoki blok bo'lsa, bot imkon bor joyda free fallback bilan ishlaydi.
+- YouTube downloader uchun `yt-dlp` ishlatiladi.
 
 ## Ishga tushirish
 ```bash

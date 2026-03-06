@@ -5,3 +5,4 @@ Pillow==11.2.1
 PyMuPDF==1.26.5
 rembg==2.0.67
 onnxruntime==1.22.0
+yt-dlp==2026.3.3

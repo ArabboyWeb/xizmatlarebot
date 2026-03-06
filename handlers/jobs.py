@@ -59,8 +59,7 @@ async def _show_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await _safe_edit(
         callback,
         (
-            "<b>Jobs Search</b>\n"
-            "RapidAPI ishlamasa free public jobs fallback ishlaydi.\n"
+            "<b>Ish qidirish</b>\n"
             "Kasb va joylashuv bo'yicha qidiring.\n"
             "Masalan: <code>developer jobs in chicago</code>"
         ),
@@ -69,7 +68,7 @@ async def _show_prompt(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 def _build_jobs_text(query: str, jobs: list[dict[str, str]]) -> str:
-    text = [f"<b>JSearch natijalari</b>\nSo'rov: <code>{html.escape(query)}</code>"]
+    text = [f"<b>Ish natijalari</b>\nSo'rov: <code>{html.escape(query)}</code>"]
     if not jobs:
         text.append("\nNatija topilmadi.")
         return "\n".join(text)

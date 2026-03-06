@@ -59,8 +59,7 @@ async def _show_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await _safe_edit(
         callback,
         (
-            "<b>Shazam Auto-Complete</b>\n"
-            "RapidAPI ishlamasa free fallback avtomatik ishlaydi.\n"
+            "<b>Musiqa qidirish</b>\n"
             "Qo'shiq nomini yuboring.\n"
             "Masalan: <code>kiss the</code>"
         ),
@@ -69,7 +68,7 @@ async def _show_prompt(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 def _build_result_text(term: str, hints: list[str], tracks: list[dict[str, str]]) -> str:
-    lines = [f"<b>Shazam natijalari</b>\nSo'rov: <code>{html.escape(term)}</code>"]
+    lines = [f"<b>Musiqa natijalari</b>\nSo'rov: <code>{html.escape(term)}</code>"]
 
     if hints:
         lines.append("\n<b>Hints:</b>")

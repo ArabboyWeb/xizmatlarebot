@@ -87,7 +87,6 @@ def _settings(data: dict[str, object]) -> tuple[str, str]:
 def _prompt_text(source: str, target: str) -> str:
     return (
         "<b>Tarjimon</b>\n"
-        "RapidAPI ishlamasa free translator fallback ishlaydi.\n"
         f"Yo'nalish: <b>{html.escape(language_name(source))} -> {html.escape(language_name(target))}</b>\n"
         "Tillar: UZ, EN, RU, ZH\n\n"
         "Tarjima qilish uchun matn yuboring."

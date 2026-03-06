@@ -348,10 +348,7 @@ async def search_jobs(
         )
     except Exception as fallback_error:  # noqa: BLE001
         if rapidapi_error is not None:
-            raise RuntimeError(
-                f"Ish qidiruvi ishlamadi. RapidAPI: {rapidapi_error}. "
-                f"Fallback: {fallback_error}."
-            ) from fallback_error
+            raise RuntimeError("Ish qidiruvi vaqtincha ishlamayapti.") from fallback_error
         raise
 
     return {

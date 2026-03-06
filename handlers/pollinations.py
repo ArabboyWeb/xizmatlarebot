@@ -96,7 +96,7 @@ def _settings(data: dict[str, object]) -> tuple[str, tuple[int, int]]:
 
 def _prompt_text(model: str, size: tuple[int, int]) -> str:
     return (
-        "<b>Pollinations AI (Free Image)</b>\n"
+        "<b>Rasm yaratish</b>\n"
         f"Model: <b>{html.escape(model.upper())}</b>\n"
         f"Size: <b>{size[0]}x{size[1]}</b>\n\n"
         "Prompt yuboring, bot rasm yaratib qaytaradi."
@@ -215,7 +215,7 @@ async def pollinations_prompt_handler(message: Message, state: FSMContext) -> No
             )
     except Exception as error:  # noqa: BLE001
         await message.answer(
-            f"<b>Pollinations xatosi</b>\n{html.escape(str(error))}",
+            f"<b>Rasm yaratish xatosi</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
             reply_markup=pollinations_keyboard(model, size),
         )

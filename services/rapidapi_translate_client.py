@@ -1,3 +1,4 @@
+import html
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,12 +38,12 @@ def _normalize_lang(code: str) -> str:
 def _extract_text(payload: dict[str, Any]) -> str:
     data = payload.get("data")
     if isinstance(data, dict):
-        translated = str(data.get("translatedText", "")).strip()
+        translated = html.unescape(str(data.get("translatedText", "")).strip())
         if translated:
             return translated
     result = payload.get("translatedText")
     if isinstance(result, str) and result.strip():
-        return result.strip()
+        return html.unescape(result.strip())
     return ""
 
 
@@ -102,12 +103,9 @@ async def translate_text(text: str, source: str, target: str) -> TranslationResu
         return TranslationResult(
             source=_result_language(fallback_result.source),
             target=_result_language(fallback_result.target),
-            text=fallback_result.text,
+            text=html.unescape(fallback_result.text),
         )
     except Exception as fallback_error:  # noqa: BLE001
         if rapidapi_error is not None:
-            raise RuntimeError(
-                f"Tarjima ishlamadi. RapidAPI: {rapidapi_error}. "
-                f"Fallback: {fallback_error}."
-            ) from fallback_error
+            raise RuntimeError("Tarjima xizmati vaqtincha ishlamayapti.") from fallback_error
         raise RuntimeError("Tarjima natijasi bo'sh qaytdi.") from fallback_error

@@ -20,42 +20,31 @@ def services_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(text="Saqlash", callback_data="services:save"),
+                InlineKeyboardButton(text="YouTube", callback_data="services:youtube"),
+            ],
+            [
                 InlineKeyboardButton(text="Ob-havo", callback_data="services:weather"),
                 InlineKeyboardButton(text="Valyuta", callback_data="services:currency"),
             ],
             [
-                InlineKeyboardButton(
-                    text="Konvertor", callback_data="services:converter"
-                )
+                InlineKeyboardButton(text="Konvertor", callback_data="services:converter"),
+                InlineKeyboardButton(text="Link qisqartirish", callback_data="services:tinyurl"),
             ],
             [
-                InlineKeyboardButton(text="1secmail", callback_data="services:tempmail"),
-                InlineKeyboardButton(text="TinyURL", callback_data="services:tinyurl"),
+                InlineKeyboardButton(text="Pochta", callback_data="services:tempmail"),
+                InlineKeyboardButton(text="Tarjimon", callback_data="services:translate"),
             ],
             [
-                InlineKeyboardButton(text="ShazamIO", callback_data="services:shazam"),
-                InlineKeyboardButton(
-                    text="Tarjimon", callback_data="services:translate"
-                ),
+                InlineKeyboardButton(text="Musiqa qidirish", callback_data="services:shazam"),
+                InlineKeyboardButton(text="Ish qidirish", callback_data="services:jobs"),
             ],
             [
-                InlineKeyboardButton(
-                    text="JSearch Jobs", callback_data="services:jobs"
-                ),
-                InlineKeyboardButton(
-                    text="YouTube Search", callback_data="services:youtube"
-                ),
+                InlineKeyboardButton(text="Maqola qidirish", callback_data="services:wikipedia"),
+                InlineKeyboardButton(text="Fonni olib tashlash", callback_data="services:rembg"),
             ],
             [
-                InlineKeyboardButton(
-                    text="Wikipedia", callback_data="services:wikipedia"
-                ),
-                InlineKeyboardButton(text="Rembg", callback_data="services:rembg"),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Pollinations AI", callback_data="services:pollinations"
-                )
+                InlineKeyboardButton(text="Rasm yaratish", callback_data="services:pollinations")
             ],
         ]
     )
@@ -63,22 +52,21 @@ def services_keyboard() -> InlineKeyboardMarkup:
 
 def main_menu_text(upload_limit_bytes: int, download_limit_bytes: int) -> str:
     return (
-        "<b>Asosiy menu</b>\n"
-        "Kerakli xizmatni tanlang.\n\n"
-        "<b>Ob-havo</b> - shahar yoki lokatsiya boyicha ob-havo\n"
-        "<b>Valyuta</b> - songgi kurslar\n"
-        "<b>Konvertor</b> - hujjat va rasm konvertatsiyasi\n"
-        "<b>1secmail</b> - temporary email inbox\n"
-        "<b>TinyURL</b> - uzun linkni qisqartirish\n"
-        "<b>ShazamIO</b> - qo'shiq nomi auto-complete\n"
-        "<b>Tarjimon</b> - RapidAPI Text Translator\n"
-        "<b>JSearch Jobs</b> - ish qidiruvi\n"
-        "<b>YouTube Search</b> - channel ichida video qidirish\n"
-        "<b>Wikipedia</b> - tezkor ensiklopediya qidiruvi\n"
-        "<b>Rembg</b> - rasm fonini olib tashlash\n"
-        "<b>Pollinations AI</b> - AI rasm generatsiya\n\n"
-        f"Telegram free upload limiti: <b>{_format_bytes(upload_limit_bytes)}</b>\n"
-        f"Telegram free download limiti: <b>{_format_bytes(download_limit_bytes)}</b>"
+        "<b>Xizmatlar menyusi</b>\n"
+        "Kerakli bo'limni tanlang.\n\n"
+        "<b>Saqlash</b> - link yoki YouTube videoni chatga olib keladi\n"
+        "<b>YouTube</b> - kanal ichida qidirish va natijadan yuklash\n"
+        "<b>Ob-havo</b> - shahar bo'yicha ob-havo\n"
+        "<b>Valyuta</b> - asosiy kurslar\n"
+        "<b>Konvertor</b> - fayl va rasm formatini almashtirish\n"
+        "<b>Pochta</b> - vaqtinchalik email ochish\n"
+        "<b>Link qisqartirish</b> - URL ni qisqartirish\n"
+        "<b>Musiqa qidirish</b> - qo'shiq nomini topish\n"
+        "<b>Tarjimon</b> - tezkor tarjima\n"
+        "<b>Ish qidirish</b> - vakansiyalarni topish\n"
+        "<b>Maqola qidirish</b> - qisqa ensiklopediya javobi\n"
+        "<b>Fonni olib tashlash</b> - rasm fonini tozalash\n"
+        "<b>Rasm yaratish</b> - promptdan rasm chizish"
     )
 
 
