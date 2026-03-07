@@ -1,13 +1,15 @@
+import asyncio
 import io
 import os
 from urllib.parse import quote
 
 import aiohttp
-from PIL import Image, ImageDraw
+from PIL import Image
 
 POLLINATIONS_BASE_URL = "https://image.pollinations.ai/prompt/"
 HTTP_TIMEOUT_SECONDS = 60
 MAX_PROMPT_LENGTH = 500
+MAX_GENERATION_ATTEMPTS = 3
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (XizmatlarBot/1.0; +https://core.telegram.org/bots/api)"
 )
@@ -20,31 +22,6 @@ def normalize_prompt(prompt: str) -> str:
     if len(clean) > MAX_PROMPT_LENGTH:
         raise ValueError(f"Prompt juda uzun. Maksimal {MAX_PROMPT_LENGTH} belgi.")
     return clean
-
-
-def _placeholder_image(prompt: str, width: int, height: int) -> bytes:
-    image = Image.new("RGB", (width, height), color=(18, 24, 38))
-    draw = ImageDraw.Draw(image)
-    draw.rectangle((16, 16, width - 16, height - 16), outline=(90, 120, 170), width=2)
-    draw.text((28, 28), "Rasm servisi vaqtincha band", fill=(220, 230, 255))
-    draw.text((28, 58), "Prompt:", fill=(160, 180, 220))
-
-    snippet = prompt[:240]
-    line_length = max(24, min(56, width // 14))
-    lines: list[str] = []
-    while snippet:
-        lines.append(snippet[:line_length])
-        snippet = snippet[line_length:]
-        if len(lines) >= 12:
-            break
-    text_y = 88
-    for line in lines:
-        draw.text((28, text_y), line, fill=(245, 245, 245))
-        text_y += 22
-
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 def _normalize_image_bytes(content: bytes) -> bytes:
@@ -60,6 +37,16 @@ def _normalize_image_bytes(content: bytes) -> bytes:
         return b""
 
 
+def _model_candidates(selected_model: str) -> list[str]:
+    safe_model = (selected_model or "flux").strip().lower() or "flux"
+    fallbacks = ["flux", "turbo"]
+    ordered = [safe_model]
+    for item in fallbacks:
+        if item not in ordered:
+            ordered.append(item)
+    return ordered
+
+
 async def generate_image(
     prompt: str,
     *,
@@ -69,21 +56,10 @@ async def generate_image(
     seed: int | None = None,
 ) -> bytes:
     clean_prompt = normalize_prompt(prompt)
-    safe_model = (model or "flux").strip().lower() or "flux"
     w = int(width)
     h = int(height)
     if w < 256 or h < 256 or w > 1536 or h > 1536:
         raise ValueError("Rasm o'lchami 256-1536 oralig'ida bo'lishi kerak.")
-
-    params: dict[str, str | int] = {
-        "model": safe_model,
-        "width": w,
-        "height": h,
-        "nologo": "true",
-        "safe": "true",
-    }
-    if seed is not None:
-        params["seed"] = int(seed)
 
     url = f"{POLLINATIONS_BASE_URL}{quote(clean_prompt, safe='')}"
     timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
@@ -91,20 +67,39 @@ async def generate_image(
         "User-Agent": os.getenv("HTTP_USER_AGENT", "").strip() or DEFAULT_USER_AGENT,
         "Accept": "image/*,application/octet-stream,*/*",
     }
-    try:
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    content = await response.read()
-                    normalized = _normalize_image_bytes(content)
-                    if normalized:
-                        return normalized
-                    return _placeholder_image(clean_prompt, w, h)
-                if response.status >= 500:
-                    return _placeholder_image(clean_prompt, w, h)
-                if response.status >= 400:
-                    raise RuntimeError("Rasm servisi vaqtincha ishlamayapti.")
-    except (aiohttp.ClientError, TimeoutError):
-        return _placeholder_image(clean_prompt, w, h)
+    last_error: Exception | None = None
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        for selected_model in _model_candidates(model):
+            params: dict[str, str | int] = {
+                "model": selected_model,
+                "width": w,
+                "height": h,
+                "nologo": "true",
+                "safe": "true",
+                "enhance": "true",
+            }
+            if seed is not None:
+                params["seed"] = int(seed)
 
-    return _placeholder_image(clean_prompt, w, h)
+            for attempt in range(1, MAX_GENERATION_ATTEMPTS + 1):
+                try:
+                    async with session.get(url, params=params) as response:
+                        if response.status == 200:
+                            content = await response.read()
+                            normalized = _normalize_image_bytes(content)
+                            if normalized:
+                                return normalized
+                            raise RuntimeError("Rasm bytes noto'g'ri qaytdi.")
+                        if response.status >= 500 or response.status in {408, 429}:
+                            raise RuntimeError(
+                                f"Rasm servisi javobi vaqtincha yaroqsiz: HTTP {response.status}"
+                            )
+                        raise RuntimeError("Rasm servisi vaqtincha ishlamayapti.")
+                except (aiohttp.ClientError, TimeoutError, RuntimeError) as error:
+                    last_error = error
+                    if attempt < MAX_GENERATION_ATTEMPTS:
+                        await asyncio.sleep(1.2 * attempt)
+
+    raise RuntimeError(
+        "Rasm hozir yaratilmayapti. Birozdan keyin qayta urinib ko'ring."
+    ) from last_error

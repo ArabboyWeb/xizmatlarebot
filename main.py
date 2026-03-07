@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from handlers.admin import router as admin_router
 from handlers.admin import is_admin_user_id
+from handlers.ai_chat import router as ai_chat_router
 from handlers.converter import router as converter_router
 from handlers.currency import router as currency_router
 from handlers.fallback import router as fallback_router
@@ -26,6 +27,7 @@ from handlers.translate import router as translate_router
 from handlers.weather import router as weather_router
 from handlers.wikipedia import router as wikipedia_router
 from handlers.youtube_search import router as youtube_search_router
+from services.ai_store import AIContextMiddleware, AIStore
 from services.analytics_store import AnalyticsMiddleware, AnalyticsStore
 from ui.main_menu import main_menu_text, safe_edit_menu, services_keyboard
 
@@ -94,6 +96,7 @@ def register_core_handlers(
             "Buyruqlar:\n"
             "/start - asosiy menyu\n"
             "/menu - xizmatlar menyusi\n"
+            "/ai - sun'iy intellekt bo'limi\n"
             "/help - yordam\n"
             "/limits - saqlash limitlari\n\n"
             "Kerakli xizmatni menyudan tanlang."
@@ -178,15 +181,20 @@ async def main() -> None:
     bot = Bot(token=bot_token)
     dispatcher = Dispatcher(storage=MemoryStorage())
     analytics_store = AnalyticsStore()
+    ai_store = AIStore()
     try:
         await analytics_store.startup()
+        await ai_store.startup()
     except Exception as error:  # noqa: BLE001
-        logging.getLogger("Main").error("Analytics storage ishga tushmadi: %s", error)
+        logging.getLogger("Main").error("Storage ishga tushmadi: %s", error)
         await bot.session.close()
         return
     analytics_middleware = AnalyticsMiddleware(analytics_store)
+    ai_context_middleware = AIContextMiddleware(ai_store)
     dispatcher.message.outer_middleware(analytics_middleware)
     dispatcher.callback_query.outer_middleware(analytics_middleware)
+    dispatcher.message.outer_middleware(ai_context_middleware)
+    dispatcher.callback_query.outer_middleware(ai_context_middleware)
     register_core_handlers(
         dispatcher,
         _mb_to_bytes(upload_limit_mb),
@@ -194,6 +202,7 @@ async def main() -> None:
     )
 
     dispatcher.include_router(admin_router)
+    dispatcher.include_router(ai_chat_router)
     dispatcher.include_router(saver_router)
     dispatcher.include_router(weather_router)
     dispatcher.include_router(currency_router)
@@ -212,6 +221,7 @@ async def main() -> None:
         await run_polling_forever(dispatcher, bot, polling_restart_delay_seconds)
     finally:
         await analytics_store.shutdown()
+        await ai_store.shutdown()
         await bot.session.close()
 
 

@@ -17,6 +17,7 @@ Telegram bot faqat **free API** servislar bilan ishlaydi.
 - `YouTube` - qidiruv, link bo'yicha yuklash, video sifati tanlash va audio saqlash.
 - `Wikipedia` - maqola summary qidirish.
 - `Rasm yaratish` - prompt asosida rasm yaratadi.
+- `Sun'iy Intellekt` - Free / Premium / Pro planli AI chat, kredit dashboard, smart routing va Telegram kanal arxivi.
 - `Ob-havo`, `Valyuta`, `Konvertor` - oldingi servislar saqlangan.
 - `Admin panel` - detal statistikalar va broadcast/reklama yuborish.
 - `Neon/Postgres` - `DATABASE_URL` bo'lsa analytics va admin statistikalar bazada saqlanadi.
@@ -39,17 +40,30 @@ pip install -r requirements.txt
 3. TinyURL official API ishlatmoqchi bo'lsangiz `TINYURL_API_TOKEN` ni kiriting.
 4. RapidAPI servislar uchun:
    - `RAPIDAPI_KEY`
-5. Admin panel uchun:
+5. AI uchun:
+   - `OPENROUTER_API_KEY`
+   - `AI_PRO_PROVIDER`
+   - `AI_PRO_OPENAI_API_KEY` yoki `AI_PRO_GOOGLE_API_KEY`
+   - `AI_LOG_CHANNEL_ID` yoki botni kanalga admin qilib qo'shing
+   - `AI_LOG_CHANNEL_LINK`
+6. Admin panel uchun:
    - `ADMIN_USER_IDS`
-6. Neon/Postgres uchun ixtiyoriy:
+7. Neon/Postgres uchun ixtiyoriy:
    - `DATABASE_URL`
-7. Temp mail fallback uchun ixtiyoriy:
+8. Temp mail fallback uchun ixtiyoriy:
    - `MAILTM_API_BASE`
 
 ## Eslatma
 - RapidAPI bo'sh yoki blok bo'lsa, bot imkon bor joyda free fallback bilan ishlaydi.
 - YouTube downloader uchun `yt-dlp` ishlatiladi.
 - `Saqlash` oddiy veb-sahifa emas, to'g'ridan-to'g'ri fayl linklari uchun mo'ljallangan.
+- AI free plan 5 soniyalik cooldown va kunlik limit bilan ishlaydi.
+- AI chat matnlari bazaga yozilmaydi; ular Telegram arxiv kanaliga yuboriladi.
+- Agar `AI_LOG_CHANNEL_ID` bo'sh bo'lsa, bot kanalga qo'shilganda `channel_post` yoki `my_chat_member` orqali kanal ID auto-detect qilinadi.
+- AI plan boshqaruvi uchun admin buyruqlari bor:
+  - `/ai`
+  - `/ai_set_plan <user_id> <free|premium|pro> [credits]`
+  - `/ai_set_credits <user_id> <credits>`
 
 ## Ishga tushirish
 ```bash

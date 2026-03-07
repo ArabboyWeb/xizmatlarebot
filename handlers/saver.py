@@ -22,10 +22,15 @@ from services.saver_client import (
     DownloadedFile,
     cleanup_download,
     detect_send_kind,
+    extract_first_url,
     is_youtube_url,
     download_url,
     saver_limit_bytes,
 )
+from services.youtube_client import download_youtube
+
+SAVE_YOUTUBE_VIDEO_QUALITIES = {"360", "720"}
+SAVE_YOUTUBE_AUDIO_BITRATES = {"128"}
 
 router = Router(name="saver")
 logger = logging.getLogger(__name__)
@@ -49,10 +54,11 @@ def save_prompt_text() -> str:
     limit_text = _format_bytes(saver_limit_bytes())
     return (
         "<b>Saqlash</b>\n"
-        "To'g'ridan-to'g'ri fayl linkini yuboring. Bot uni yuklab, shu chatga qaytaradi.\n\n"
+        "Direct fayl linki yoki YouTube link yuboring. Bot uni yuklab, shu chatga qaytaradi.\n\n"
         f"Maksimal hajm: <b>{limit_text}</b>\n"
         "Misol:\n"
-        "<code>https://example.com/file.pdf</code>"
+        "<code>https://example.com/file.pdf</code>\n"
+        "<code>https://youtu.be/dQw4w9WgXcQ</code>"
     )
 
 
@@ -69,6 +75,21 @@ def save_result_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Yana saqlash", callback_data="save:repeat")],
             [InlineKeyboardButton(text="Orqaga", callback_data="services:back")],
+        ]
+    )
+
+
+def save_youtube_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Video 360p", callback_data="save:youtube:video:360"),
+                InlineKeyboardButton(text="Video 720p", callback_data="save:youtube:video:720"),
+            ],
+            [
+                InlineKeyboardButton(text="Audio MP3", callback_data="save:youtube:audio:128"),
+            ],
+            [InlineKeyboardButton(text="Bekor qilish", callback_data="save:repeat")],
         ]
     )
 
@@ -155,6 +176,22 @@ def _public_save_error(error: Exception) -> str:
     return "Linkni yuklab bo'lmadi. To'g'ridan-to'g'ri fayl link yuboring."
 
 
+def _public_youtube_save_error(error: Exception) -> str:
+    message = str(error or "").strip()
+    lowered = message.lower()
+    if isinstance(error, ValueError) and message:
+        return message
+    if "playlist" in lowered:
+        return "Playlist emas, bitta video link yuboring."
+    if "audio" in lowered and "topilmadi" in lowered:
+        return "Audio formati topilmadi."
+    if "video" in lowered and "topilmadi" in lowered:
+        return "Tanlangan video sifati topilmadi."
+    if "limit" in lowered or "katta" in lowered:
+        return "Fayl limitdan katta."
+    return "YouTube linkini yuklab bo'lmadi. Boshqa linkni sinab ko'ring."
+
+
 async def download_and_send_url(
     message: Message,
     url: str,
@@ -204,6 +241,64 @@ async def download_and_send_url(
         await cleanup_download(downloaded)
 
 
+async def download_and_send_youtube(
+    message: Message,
+    url: str,
+    *,
+    mode: str,
+    quality: str = "360",
+    audio_bitrate: str = "128",
+    title: str = "Saqlash / YouTube",
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> DownloadedFile:
+    progress_message = await message.answer(
+        "<b>YouTube yuklanmoqda...</b>\nBiroz kuting.",
+        parse_mode="HTML",
+    )
+    downloaded: DownloadedFile | None = None
+    succeeded = False
+    try:
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            downloaded = await download_youtube(
+                url,
+                mode=mode,
+                quality=quality,
+                audio_bitrate=audio_bitrate,
+                max_bytes=saver_limit_bytes(),
+            )
+        with contextlib.suppress(TelegramBadRequest):
+            await progress_message.edit_text(
+                "<b>Yuborilmoqda...</b>",
+                parse_mode="HTML",
+            )
+        async with ChatActionSender.upload_document(
+            bot=message.bot,
+            chat_id=message.chat.id,
+        ):
+            await send_downloaded_file(
+                message,
+                downloaded,
+                title=title,
+                reply_markup=reply_markup,
+            )
+        succeeded = True
+        return downloaded
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Saver YouTube xatosi: %s", error)
+        with contextlib.suppress(TelegramBadRequest):
+            await progress_message.edit_text(
+                f"<b>YouTube xatosi</b>\n{html.escape(_public_youtube_save_error(error))}",
+                parse_mode="HTML",
+                reply_markup=reply_markup or save_youtube_keyboard(),
+            )
+        raise
+    finally:
+        if succeeded:
+            with contextlib.suppress(TelegramBadRequest):
+                await progress_message.delete()
+        await cleanup_download(downloaded)
+
+
 @router.callback_query(F.data == "services:save")
 async def save_entry_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -228,11 +323,20 @@ async def save_url_handler(
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
         return
-    if is_youtube_url(text):
+    try:
+        candidate_url = extract_first_url(text)
+    except ValueError:
+        candidate_url = ""
+    if candidate_url and is_youtube_url(candidate_url):
         await message.answer(
-            "YouTube linklari uchun YouTube bo'limidan foydalaning.",
-            reply_markup=save_keyboard(),
+            (
+                "<b>YouTube topildi</b>\n"
+                "Saver ichida yuklash uchun formatni tanlang."
+            ),
+            parse_mode="HTML",
+            reply_markup=save_youtube_keyboard(),
         )
+        await state.update_data(save_youtube_url=candidate_url)
         return
 
     try:
@@ -260,6 +364,71 @@ async def save_url_handler(
             source=downloaded.source,
             size=downloaded.size,
         )
+    await state.set_state(SaverState.waiting_url)
+
+
+@router.callback_query(F.data.startswith("save:youtube:"))
+async def save_youtube_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+    analytics_store: AnalyticsStore,
+) -> None:
+    if callback.message is None:
+        await callback.answer("Xabar topilmadi", show_alert=True)
+        return
+
+    data = await state.get_data()
+    url = str(data.get("save_youtube_url", "")).strip()
+    if not url:
+        await callback.answer("YouTube link topilmadi", show_alert=True)
+        return
+
+    parts = (callback.data or "").split(":")
+    if len(parts) != 4:
+        await callback.answer("Format noto'g'ri", show_alert=True)
+        return
+
+    mode = parts[2].strip().lower()
+    value = parts[3].strip().lower()
+    if mode == "video" and value not in SAVE_YOUTUBE_VIDEO_QUALITIES:
+        await callback.answer("Video sifati noto'g'ri", show_alert=True)
+        return
+    if mode == "audio" and value not in SAVE_YOUTUBE_AUDIO_BITRATES:
+        await callback.answer("Audio formati noto'g'ri", show_alert=True)
+        return
+    if mode not in {"video", "audio"}:
+        await callback.answer("Format noto'g'ri", show_alert=True)
+        return
+
+    await callback.answer("Yuklanmoqda...")
+    try:
+        downloaded = await download_and_send_youtube(
+            callback.message,
+            url,
+            mode=mode,
+            quality=value if mode == "video" else "360",
+            audio_bitrate=value if mode == "audio" else "128",
+            reply_markup=save_result_keyboard(),
+        )
+    except Exception:
+        return
+
+    if callback.from_user is not None:
+        await analytics_store.record_download(
+            user_id=int(callback.from_user.id),
+            username=str(callback.from_user.username or "").strip(),
+            full_name=" ".join(
+                part
+                for part in [
+                    str(callback.from_user.first_name or "").strip(),
+                    str(callback.from_user.last_name or "").strip(),
+                ]
+                if part
+            ).strip(),
+            source=downloaded.source,
+            size=downloaded.size,
+        )
+    await state.update_data(save_youtube_url="")
     await state.set_state(SaverState.waiting_url)
 
 

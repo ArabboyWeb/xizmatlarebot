@@ -1,4 +1,5 @@
 from .admin import router as admin_router
+from .ai_chat import router as ai_chat_router
 from .converter import router as converter_router
 from .currency import router as currency_router
 from .fallback import router as fallback_router
@@ -17,6 +18,7 @@ __all__ = [
     "converter_router",
     "currency_router",
     "admin_router",
+    "ai_chat_router",
     "fallback_router",
     "jobs_router",
     "pollinations_router",

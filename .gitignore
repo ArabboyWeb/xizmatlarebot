@@ -7,3 +7,5 @@ logs/
 *.part
 bot.lock
 .ruff_cache/
+data/
+tmp_pollinations_*

@@ -74,6 +74,7 @@ def admin_confirm_keyboard() -> InlineKeyboardMarkup:
 
 def _fmt_service_name(key: str) -> str:
     mapping = {
+        "ai": "Sun'iy Intellekt",
         "save": "Saqlash",
         "weather": "Ob-havo",
         "currency": "Valyuta",

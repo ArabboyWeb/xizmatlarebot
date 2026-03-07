@@ -42,6 +42,9 @@ def services_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Wikipedia", callback_data="services:wikipedia"),
             InlineKeyboardButton(text="Rasm yaratish", callback_data="services:pollinations"),
         ],
+        [
+            InlineKeyboardButton(text="Sun'iy Intellekt", callback_data="services:ai"),
+        ],
     ]
     if is_admin:
         rows.append(
@@ -59,7 +62,7 @@ def main_menu_text(
     text = (
         "<b>Xizmatlar menyusi</b>\n"
         "Kerakli bo'limni tanlang.\n\n"
-        "<b>Saqlash</b> - direct fayl linkini chatga olib keladi\n"
+        "<b>Saqlash</b> - direct va YouTube linkini chatga olib keladi\n"
         "<b>YouTube</b> - qidirish, video yuklash va audio saqlash\n"
         "<b>Ob-havo</b> - shahar bo'yicha ob-havo\n"
         "<b>Valyuta</b> - asosiy kurslar\n"
@@ -70,7 +73,8 @@ def main_menu_text(
         "<b>Tarjimon</b> - tezkor tarjima\n"
         "<b>Ish qidirish</b> - vakansiyalarni topish\n"
         "<b>Wikipedia</b> - qisqa ensiklopediya javobi\n"
-        "<b>Rasm yaratish</b> - promptdan rasm chizish"
+        "<b>Rasm yaratish</b> - promptdan rasm chizish\n"
+        "<b>Sun'iy Intellekt</b> - planli AI chat va kredit dashboard"
     )
     if is_admin:
         text += "\n\n<b>Admin panel</b> - statistika va reklama yuborish"

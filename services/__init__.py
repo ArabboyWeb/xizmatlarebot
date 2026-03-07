@@ -1,6 +1,9 @@
 """Service package exports."""
 
 __all__ = [
+    "ai_channel_logger",
+    "ai_gateway",
+    "ai_store",
     "analytics_store",
     "converter_tools",
     "currency_client",
