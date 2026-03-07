@@ -21,6 +21,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "Aniq, foydali va qisqa javob bering. Agar foydalanuvchi boshqa til so'ramasa, "
     "o'zbek tilida javob qaytaring."
 )
+MODEL_ALIAS_AUTO = "auto"
+PLAN_LEVELS = {"free": 0, "premium": 1, "pro": 2}
 
 
 @dataclass(slots=True)
@@ -30,6 +32,7 @@ class AIRouteDecision:
     route: str
     credit_multiplier: int
     effective_plan: str
+    model_alias: str
 
 
 @dataclass(slots=True)
@@ -51,7 +54,7 @@ def _env(name: str, default: str = "") -> str:
 def _openrouter_headers() -> dict[str, str]:
     api_key = _env("OPENROUTER_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY topilmadi.")
+        raise RuntimeError("AI provider kaliti topilmadi.")
     return {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -64,13 +67,118 @@ def _system_prompt() -> str:
     return _env("AI_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
 
+def _free_simple_model() -> str:
+    return _env("AI_FREE_MODEL_SIMPLE", "z-ai/glm-4.5-air:free")
+
+
+def _free_complex_model() -> str:
+    return _env("AI_FREE_MODEL_COMPLEX", "qwen/qwen3-vl-235b-a22b-thinking")
+
+
+def _premium_simple_model() -> str:
+    return _env("AI_PREMIUM_MODEL_SIMPLE", "openai/gpt-5-mini")
+
+
+def _premium_complex_model() -> str:
+    return _env("AI_PREMIUM_MODEL_COMPLEX", "x-ai/grok-4.1-fast")
+
+
+def _pro_provider_model() -> tuple[str, str]:
+    provider = _env("AI_PRO_PROVIDER", "openai").lower()
+    if provider == "google":
+        return "google", _env("AI_PRO_GOOGLE_MODEL", "gemini-3.1-pro-preview")
+    return "openai", _env("AI_PRO_OPENAI_MODEL", "gpt-5.2")
+
+
+def plan_level(plan: str) -> int:
+    return PLAN_LEVELS.get((plan or "free").strip().lower(), 0)
+
+
+def clamp_selected_plan(selected_plan: str, current_plan: str) -> str:
+    normalized_selected = (selected_plan or MODEL_ALIAS_AUTO).strip().lower()
+    if normalized_selected == MODEL_ALIAS_AUTO:
+        return MODEL_ALIAS_AUTO
+    if normalized_selected not in PLAN_LEVELS:
+        return MODEL_ALIAS_AUTO
+    current = (current_plan or "free").strip().lower()
+    if plan_level(normalized_selected) > plan_level(current):
+        return current
+    return normalized_selected
+
+
+def effective_selected_plan(user: dict[str, Any]) -> str:
+    current_plan = str(user.get("current_plan", "free") or "free").strip().lower()
+    selected_plan = clamp_selected_plan(
+        str(user.get("selected_plan", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO),
+        current_plan,
+    )
+    available_plan = current_plan
+    if current_plan in {"premium", "pro"} and int(user.get("token_balance", 0) or 0) <= 0:
+        available_plan = "free"
+    target_plan = current_plan if selected_plan == MODEL_ALIAS_AUTO else selected_plan
+    return min(target_plan, available_plan, key=plan_level)
+
+
+def _manual_model_specs() -> dict[str, tuple[str, str, int, str]]:
+    provider, pro_model = _pro_provider_model()
+    pro_label = "GPT-5.2" if provider == "openai" else "Gemini 3.1 Pro"
+    return {
+        "free_glm": ("openrouter", _free_simple_model(), 1, "GLM-4.5 Air Free"),
+        "free_qwen": ("openrouter", _free_complex_model(), 1, "Qwen 3 VL Thinking"),
+        "premium_mini": ("openrouter", _premium_simple_model(), 1, "GPT-5 Mini"),
+        "premium_grok": ("openrouter", _premium_complex_model(), 2, "Grok 4.1 Fast"),
+        "pro_official": (provider, pro_model, 3, pro_label),
+    }
+
+
+def allowed_model_aliases_for_plan(plan: str) -> list[str]:
+    normalized = (plan or "free").strip().lower()
+    if normalized == "free":
+        return ["free_glm", "free_qwen"]
+    if normalized == "premium":
+        return ["premium_mini", "premium_grok"]
+    return ["premium_mini", "premium_grok", "pro_official"]
+
+
+def model_options_for_plan(plan: str) -> list[tuple[str, str]]:
+    specs = _manual_model_specs()
+    options = [(MODEL_ALIAS_AUTO, "Auto")]
+    for alias in allowed_model_aliases_for_plan(plan):
+        options.append((alias, specs[alias][3]))
+    return options
+
+
+def model_label(alias: str) -> str:
+    normalized = (alias or MODEL_ALIAS_AUTO).strip().lower()
+    if normalized == MODEL_ALIAS_AUTO:
+        return "Auto"
+    return _manual_model_specs().get(normalized, ("", "", 0, normalized))[3]
+
+
+def _manual_route_decision(selected_model_alias: str, effective_plan: str) -> AIRouteDecision | None:
+    normalized_alias = (selected_model_alias or MODEL_ALIAS_AUTO).strip().lower()
+    if normalized_alias == MODEL_ALIAS_AUTO:
+        return None
+    if normalized_alias not in allowed_model_aliases_for_plan(effective_plan):
+        return None
+    provider, model, credit_multiplier, _ = _manual_model_specs()[normalized_alias]
+    return AIRouteDecision(
+        provider=provider,
+        model=model,
+        route=f"manual_{effective_plan}",
+        credit_multiplier=credit_multiplier,
+        effective_plan=effective_plan,
+        model_alias=normalized_alias,
+    )
+
+
 def _parse_openrouter_text(payload: dict[str, Any]) -> str:
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
-        raise RuntimeError("OpenRouter javobi bo'sh qaytdi.")
+        raise RuntimeError("AI javobi bo'sh qaytdi.")
     message = choices[0].get("message")
     if not isinstance(message, dict):
-        raise RuntimeError("OpenRouter message topilmadi.")
+        raise RuntimeError("AI javobi noto'g'ri formatda keldi.")
     content = message.get("content")
     if isinstance(content, str) and content.strip():
         return content.strip()
@@ -84,7 +192,7 @@ def _parse_openrouter_text(payload: dict[str, Any]) -> str:
                 parts.append(text)
         if parts:
             return "\n".join(parts).strip()
-    raise RuntimeError("OpenRouter text javobi topilmadi.")
+    raise RuntimeError("AI text javobi topilmadi.")
 
 
 def _parse_openai_text(payload: dict[str, Any]) -> str:
@@ -93,7 +201,7 @@ def _parse_openai_text(payload: dict[str, Any]) -> str:
         return direct_text
     output = payload.get("output")
     if not isinstance(output, list):
-        raise RuntimeError("OpenAI javobi bo'sh qaytdi.")
+        raise RuntimeError("AI javobi bo'sh qaytdi.")
     chunks: list[str] = []
     for item in output:
         if not isinstance(item, dict):
@@ -109,19 +217,19 @@ def _parse_openai_text(payload: dict[str, Any]) -> str:
                 chunks.append(text)
     if chunks:
         return "\n".join(chunks).strip()
-    raise RuntimeError("OpenAI text javobi topilmadi.")
+    raise RuntimeError("AI text javobi topilmadi.")
 
 
 def _parse_google_text(payload: dict[str, Any]) -> str:
     candidates = payload.get("candidates")
     if not isinstance(candidates, list) or not candidates:
-        raise RuntimeError("Google Gemini javobi bo'sh qaytdi.")
+        raise RuntimeError("AI javobi bo'sh qaytdi.")
     content = candidates[0].get("content")
     if not isinstance(content, dict):
-        raise RuntimeError("Google Gemini content topilmadi.")
+        raise RuntimeError("AI javobi noto'g'ri formatda keldi.")
     parts = content.get("parts")
     if not isinstance(parts, list):
-        raise RuntimeError("Google Gemini parts topilmadi.")
+        raise RuntimeError("AI javobi noto'g'ri formatda keldi.")
     chunks: list[str] = []
     for part in parts:
         if not isinstance(part, dict):
@@ -131,7 +239,7 @@ def _parse_google_text(payload: dict[str, Any]) -> str:
             chunks.append(text)
     if chunks:
         return "\n".join(chunks).strip()
-    raise RuntimeError("Google Gemini text javobi topilmadi.")
+    raise RuntimeError("AI text javobi topilmadi.")
 
 
 def _usage_value(payload: dict[str, Any], *keys: str) -> int:
@@ -144,6 +252,19 @@ def _usage_value(payload: dict[str, Any], *keys: str) -> int:
         return int(current or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _api_error_text(payload: Any, status: int) -> str:
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message", "") or "").strip()
+            if message:
+                return f"{status}: {message}"
+        message = str(payload.get("message", "") or "").strip()
+        if message:
+            return f"{status}: {message}"
+    return f"{status}: API request failed"
 
 
 def _complexity(text: str) -> str:
@@ -183,69 +304,79 @@ def _complexity(text: str) -> str:
     return "complex"
 
 
-def select_route(user_text: str, *, current_plan: str, effective_plan: str) -> AIRouteDecision:
+def select_route(
+    user_text: str,
+    *,
+    current_plan: str,
+    effective_plan: str,
+    selected_model_alias: str = MODEL_ALIAS_AUTO,
+) -> AIRouteDecision:
+    manual_decision = _manual_route_decision(selected_model_alias, effective_plan)
+    if manual_decision is not None:
+        return manual_decision
+
     complexity = _complexity(user_text)
     if effective_plan == "free":
-        model = _env("AI_FREE_MODEL_SIMPLE", "z-ai/glm-4.5-air:free")
+        model = _free_simple_model()
+        model_alias = "free_glm"
         if complexity in {"standard", "complex"}:
-            model = _env(
-                "AI_FREE_MODEL_COMPLEX",
-                "qwen/qwen3-vl-235b-a22b-thinking",
-            )
+            model = _free_complex_model()
+            model_alias = "free_qwen"
         return AIRouteDecision(
             provider="openrouter",
             model=model,
             route=f"free_{complexity}",
             credit_multiplier=1,
             effective_plan="free",
+            model_alias=model_alias,
         )
 
     if effective_plan == "premium":
         if complexity == "simple":
             return AIRouteDecision(
                 provider="openrouter",
-                model=_env("AI_PREMIUM_MODEL_SIMPLE", "openai/gpt-5-mini"),
+                model=_premium_simple_model(),
                 route="premium_simple",
                 credit_multiplier=1,
                 effective_plan="premium",
+                model_alias="premium_mini",
             )
         return AIRouteDecision(
             provider="openrouter",
-            model=_env("AI_PREMIUM_MODEL_COMPLEX", "x-ai/grok-4.1-fast"),
+            model=_premium_complex_model(),
             route="premium_complex",
             credit_multiplier=2,
             effective_plan="premium",
+            model_alias="premium_grok",
         )
 
     if complexity == "simple":
         return AIRouteDecision(
             provider="openrouter",
-            model=_env("AI_PREMIUM_MODEL_SIMPLE", "openai/gpt-5-mini"),
+            model=_premium_simple_model(),
             route="pro_simple_to_premium",
             credit_multiplier=1,
             effective_plan="pro",
+            model_alias="premium_mini",
         )
     if complexity == "standard":
         return AIRouteDecision(
             provider="openrouter",
-            model=_env("AI_PREMIUM_MODEL_COMPLEX", "x-ai/grok-4.1-fast"),
+            model=_premium_complex_model(),
             route="pro_standard_to_premium",
             credit_multiplier=2,
             effective_plan="pro",
+            model_alias="premium_grok",
         )
 
-    provider = _env("AI_PRO_PROVIDER", "openai").lower()
-    if provider == "google":
-        model = _env("AI_PRO_GOOGLE_MODEL", "gemini-3.1-pro-preview")
-    else:
-        provider = "openai"
-        model = _env("AI_PRO_OPENAI_MODEL", "gpt-5.2")
+    provider, model = _pro_provider_model()
     return AIRouteDecision(
         provider=provider,
         model=model,
         route=f"pro_official_{provider}",
         credit_multiplier=3,
         effective_plan="pro",
+        model_alias="pro_official",
     )
 
 
@@ -300,7 +431,7 @@ async def _openrouter_completion(messages: list[dict[str, str]], model: str, rou
         async with session.post(OPENROUTER_URL, json=payload) as response:
             data = await response.json(content_type=None)
             if response.status >= 400:
-                raise RuntimeError(str(data)[:200])
+                raise RuntimeError(_api_error_text(data, response.status))
     usage = data.get("usage") if isinstance(data, dict) else {}
     return AIResult(
         text=_parse_openrouter_text(data),
@@ -316,7 +447,7 @@ async def _openrouter_completion(messages: list[dict[str, str]], model: str, rou
 async def _openai_completion(prompt_text: str, model: str, route: str) -> AIResult:
     api_key = _env("AI_PRO_OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("AI_PRO_OPENAI_API_KEY topilmadi.")
+        raise RuntimeError("401: Official provider kaliti topilmadi")
     started = time.perf_counter()
     payload = {"model": model, "input": prompt_text}
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -325,7 +456,7 @@ async def _openai_completion(prompt_text: str, model: str, route: str) -> AIResu
         async with session.post(OPENAI_RESPONSES_URL, json=payload) as response:
             data = await response.json(content_type=None)
             if response.status >= 400:
-                raise RuntimeError(str(data)[:200])
+                raise RuntimeError(_api_error_text(data, response.status))
     usage = data.get("usage") if isinstance(data, dict) else {}
     return AIResult(
         text=_parse_openai_text(data),
@@ -341,7 +472,7 @@ async def _openai_completion(prompt_text: str, model: str, route: str) -> AIResu
 async def _google_completion(prompt_text: str, model: str, route: str) -> AIResult:
     api_key = _env("AI_PRO_GOOGLE_API_KEY")
     if not api_key:
-        raise RuntimeError("AI_PRO_GOOGLE_API_KEY topilmadi.")
+        raise RuntimeError("401: Official provider kaliti topilmadi")
     started = time.perf_counter()
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
@@ -353,7 +484,7 @@ async def _google_completion(prompt_text: str, model: str, route: str) -> AIResu
         async with session.post(url, params={"key": api_key}, json=payload) as response:
             data = await response.json(content_type=None)
             if response.status >= 400:
-                raise RuntimeError(str(data)[:200])
+                raise RuntimeError(_api_error_text(data, response.status))
     usage = data.get("usageMetadata") if isinstance(data, dict) else {}
     return AIResult(
         text=_parse_google_text(data),
@@ -372,11 +503,13 @@ async def generate_ai_reply(
     history: list[dict[str, str]],
     current_plan: str,
     effective_plan: str,
+    selected_model_alias: str = MODEL_ALIAS_AUTO,
 ) -> tuple[AIRouteDecision, AIResult]:
     decision = select_route(
         user_text,
         current_plan=current_plan,
         effective_plan=effective_plan,
+        selected_model_alias=selected_model_alias,
     )
     messages = build_messages(history, user_text)
     if decision.provider == "openrouter":

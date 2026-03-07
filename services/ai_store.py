@@ -9,6 +9,8 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
 
+from services.ai_gateway import MODEL_ALIAS_AUTO, clamp_selected_plan, effective_selected_plan
+
 try:
     import asyncpg
 except Exception:  # pragma: no cover
@@ -75,6 +77,11 @@ def _free_cooldown_seconds() -> int:
 
 def _context_messages_limit() -> int:
     return max(4, _read_int("AI_CONTEXT_MESSAGES", 12))
+
+
+def _normalize_selected_model(value: Any) -> str:
+    normalized = str(value or MODEL_ALIAS_AUTO).strip().lower()
+    return normalized or MODEL_ALIAS_AUTO
 
 
 def _next_daily_reset(now: datetime | None = None) -> datetime:
@@ -173,6 +180,8 @@ class AIStore:
             username TEXT NOT NULL DEFAULT '',
             full_name TEXT NOT NULL DEFAULT '',
             current_plan TEXT NOT NULL DEFAULT 'free',
+            selected_plan TEXT NOT NULL DEFAULT 'auto',
+            selected_model TEXT NOT NULL DEFAULT 'auto',
             token_balance BIGINT NOT NULL DEFAULT 20,
             free_requests_used BIGINT NOT NULL DEFAULT 0,
             free_reset_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -202,6 +211,12 @@ class AIStore:
         """
         async with self._pool.acquire() as connection:
             await connection.execute(schema_sql)
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS selected_plan TEXT NOT NULL DEFAULT 'auto';"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS selected_model TEXT NOT NULL DEFAULT 'auto';"
+            )
 
     async def _ensure_loaded(self) -> None:
         if self._loaded:
@@ -240,6 +255,8 @@ class AIStore:
             "username": username,
             "full_name": full_name,
             "current_plan": "free",
+            "selected_plan": MODEL_ALIAS_AUTO,
+            "selected_model": MODEL_ALIAS_AUTO,
             "token_balance": _free_daily_requests(),
             "free_requests_used": 0,
             "free_reset_date": _iso(_next_daily_reset(now)),
@@ -267,6 +284,13 @@ class AIStore:
         if current_plan not in {"free", "premium", "pro"}:
             current_plan = "free"
         user["current_plan"] = current_plan
+        user["selected_plan"] = clamp_selected_plan(
+            str(user.get("selected_plan", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO),
+            current_plan,
+        )
+        user["selected_model"] = _normalize_selected_model(
+            user.get("selected_model", MODEL_ALIAS_AUTO)
+        )
 
         free_reset_date = _parse_dt(user.get("free_reset_date"))
         if now >= free_reset_date:
@@ -475,6 +499,8 @@ class AIStore:
             "username": str(row["username"] or ""),
             "full_name": str(row["full_name"] or ""),
             "current_plan": str(row["current_plan"] or "free"),
+            "selected_plan": str(row["selected_plan"] or MODEL_ALIAS_AUTO),
+            "selected_model": str(row["selected_model"] or MODEL_ALIAS_AUTO),
             "token_balance": int(row["token_balance"] or 0),
             "free_requests_used": int(row["free_requests_used"] or 0),
             "free_reset_date": _iso(_parse_dt(row["free_reset_date"])),
@@ -491,10 +517,7 @@ class AIStore:
         }
 
     def _effective_plan(self, user: dict[str, Any]) -> str:
-        current_plan = str(user.get("current_plan", "free") or "free").strip().lower()
-        if current_plan in {"premium", "pro"} and int(user.get("token_balance", 0) or 0) <= 0:
-            return "free"
-        return current_plan
+        return effective_selected_plan(user)
 
     async def requests_in_last_minute(self, *, user_id: int) -> int:
         threshold = _utc_now() - timedelta(minutes=1)
@@ -825,6 +848,8 @@ class AIStore:
                     """
                     UPDATE ai_users
                     SET current_plan = $2,
+                        selected_plan = 'auto',
+                        selected_model = 'auto',
                         token_balance = $3,
                         free_requests_used = 0,
                         free_reset_date = $4,
@@ -858,6 +883,8 @@ class AIStore:
                 ),
             )
             record["current_plan"] = normalized_plan
+            record["selected_plan"] = MODEL_ALIAS_AUTO
+            record["selected_model"] = MODEL_ALIAS_AUTO
             record["token_balance"] = int(target_balance)
             record["free_requests_used"] = 0
             record["free_reset_date"] = _iso(_next_daily_reset(now))
@@ -901,6 +928,101 @@ class AIStore:
             if not isinstance(record, dict):
                 raise RuntimeError("AI foydalanuvchi topilmadi.")
             record["token_balance"] = int(credits)
+            record["updated_at"] = _iso(_utc_now())
+            await self._save_locked()
+            return json.loads(json.dumps(record))
+
+    async def set_user_selected_plan(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        selected_plan: str,
+    ) -> dict[str, Any]:
+        user = await self.ensure_user(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+        )
+        normalized_selected_plan = clamp_selected_plan(
+            selected_plan,
+            str(user.get("current_plan", "free") or "free"),
+        )
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                await connection.execute(
+                    """
+                    UPDATE ai_users
+                    SET selected_plan = $2,
+                        selected_model = 'auto',
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    int(user_id),
+                    normalized_selected_plan,
+                )
+                row = await connection.fetchrow(
+                    "SELECT * FROM ai_users WHERE user_id = $1",
+                    int(user_id),
+                )
+            if row is None:
+                raise RuntimeError("AI foydalanuvchi topilmadi.")
+            return self._serialize_row(row)
+
+        await self._ensure_loaded()
+        async with self._lock:
+            users = self._data.setdefault("users", {})
+            record = users.get(str(int(user_id)))
+            if not isinstance(record, dict):
+                raise RuntimeError("AI foydalanuvchi topilmadi.")
+            record["selected_plan"] = normalized_selected_plan
+            record["selected_model"] = MODEL_ALIAS_AUTO
+            record["updated_at"] = _iso(_utc_now())
+            await self._save_locked()
+            return json.loads(json.dumps(record))
+
+    async def set_user_selected_model(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        selected_model: str,
+    ) -> dict[str, Any]:
+        await self.ensure_user(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+        )
+        normalized_selected_model = _normalize_selected_model(selected_model)
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                await connection.execute(
+                    """
+                    UPDATE ai_users
+                    SET selected_model = $2,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    int(user_id),
+                    normalized_selected_model,
+                )
+                row = await connection.fetchrow(
+                    "SELECT * FROM ai_users WHERE user_id = $1",
+                    int(user_id),
+                )
+            if row is None:
+                raise RuntimeError("AI foydalanuvchi topilmadi.")
+            return self._serialize_row(row)
+
+        await self._ensure_loaded()
+        async with self._lock:
+            users = self._data.setdefault("users", {})
+            record = users.get(str(int(user_id)))
+            if not isinstance(record, dict):
+                raise RuntimeError("AI foydalanuvchi topilmadi.")
+            record["selected_model"] = normalized_selected_model
             record["updated_at"] = _iso(_utc_now())
             await self._save_locked()
             return json.loads(json.dumps(record))

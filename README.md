@@ -17,7 +17,7 @@ Telegram bot faqat **free API** servislar bilan ishlaydi.
 - `YouTube` - qidiruv, link bo'yicha yuklash, video sifati tanlash va audio saqlash.
 - `Wikipedia` - maqola summary qidirish.
 - `Rasm yaratish` - prompt asosida rasm yaratadi.
-- `Sun'iy Intellekt` - Free / Premium / Pro planli AI chat, kredit dashboard, smart routing va Telegram kanal arxivi.
+- `Sun'iy Intellekt` - Free / Premium / Pro planli AI chat, kredit dashboard, smart routing, plan/model selector va yashirin Telegram kanal arxivi.
 - `Ob-havo`, `Valyuta`, `Konvertor` - oldingi servislar saqlangan.
 - `Admin panel` - detal statistikalar va broadcast/reklama yuborish.
 - `Neon/Postgres` - `DATABASE_URL` bo'lsa analytics va admin statistikalar bazada saqlanadi.
@@ -59,9 +59,12 @@ pip install -r requirements.txt
 - `Saqlash` oddiy veb-sahifa emas, to'g'ridan-to'g'ri fayl linklari uchun mo'ljallangan.
 - AI free plan 5 soniyalik cooldown va kunlik limit bilan ishlaydi.
 - AI chat matnlari bazaga yozilmaydi; ular Telegram arxiv kanaliga yuboriladi.
+- AI arxiv kanali foydalanuvchiga ko'rsatilmaydi.
+- AI ichida user-level `plan` va `model` selector bor.
 - Agar `AI_LOG_CHANNEL_ID` bo'sh bo'lsa, bot kanalga qo'shilganda `channel_post` yoki `my_chat_member` orqali kanal ID auto-detect qilinadi.
 - AI plan boshqaruvi uchun admin buyruqlari bor:
   - `/ai`
+  - `/ai_diag`
   - `/ai_set_plan <user_id> <free|premium|pro> [credits]`
   - `/ai_set_credits <user_id> <credits>`
 
