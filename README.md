@@ -55,3 +55,12 @@ pip install -r requirements.txt
 ```bash
 python bot.py
 ```
+
+## Railway deploy
+1. Repo ni Railway'ga ulang.
+2. `Variables` bo'limida `.env` dagi kerakli qiymatlarni kiriting:
+   - `BOT_TOKEN` (majburiy)
+   - `ADMIN_USER_IDS` (tavsiya)
+   - `DATABASE_URL` (ixtiyoriy)
+   - boshqalar (`RAPIDAPI_KEY`, `TINYURL_API_TOKEN`, ...)
+3. Deploy qiling. Bot `railway.toml` dagi `python bot.py` bilan worker sifatida ishga tushadi.
