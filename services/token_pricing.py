@@ -338,8 +338,34 @@ SERVICE_TARIFFS: dict[str, ServiceTariff] = {
 }
 
 
-def service_tariff(service_key: str) -> ServiceTariff:
+LEGACY_SERVICE_KEY_ALIASES: dict[str, str] = {
+    "ai": "ai_chat",
+    "currency": "currency_refresh",
+    "download:direct": "save_direct",
+    "download:instagram_video": "social_download",
+    "download:tiktok_video": "social_download",
+    "download:youtube": "youtube_download_video",
+    "download:youtube_audio": "youtube_download_audio",
+    "download:youtube_video": "youtube_download_video",
+    "jobs": "jobs_search",
+    "pollinations": "pollinations_generate",
+    "save": "save_direct",
+    "translate": "translate_text",
+    "weather": "weather_lookup",
+    "wikipedia": "wikipedia_search",
+    "youtube": "youtube_search",
+}
+
+
+def resolve_service_key(service_key: str) -> str:
     key = str(service_key or "").strip().lower()
+    if not key:
+        return ""
+    return LEGACY_SERVICE_KEY_ALIASES.get(key, key)
+
+
+def service_tariff(service_key: str) -> ServiceTariff:
+    key = resolve_service_key(service_key)
     if key not in SERVICE_TARIFFS:
         raise KeyError(f"Tariff topilmadi: {service_key}")
     base = SERVICE_TARIFFS[key]
@@ -385,7 +411,7 @@ def set_service_tariff_cost(
     free_cost: int | None = None,
     premium_cost: int | None = None,
 ) -> ServiceTariff:
-    key = str(service_key or "").strip().lower()
+    key = resolve_service_key(service_key)
     if key not in SERVICE_TARIFFS:
         raise KeyError(f"Tariff topilmadi: {service_key}")
     if free_cost is None and premium_cost is None:
@@ -414,7 +440,7 @@ def set_service_tariff_cost(
 
 
 def reset_service_tariff(service_key: str) -> ServiceTariff:
-    key = str(service_key or "").strip().lower()
+    key = resolve_service_key(service_key)
     if key not in SERVICE_TARIFFS:
         raise KeyError(f"Tariff topilmadi: {service_key}")
     overrides = _load_overrides()

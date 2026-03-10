@@ -118,7 +118,7 @@ def _token_services_keyboard(category: str) -> InlineKeyboardMarkup:
         current_row.append(
             InlineKeyboardButton(
                 text=tariff.label,
-                callback_data=f"admin:tokens:svc:{tariff.key}:{category}",
+                callback_data=f"admin:tokens:svc:{tariff.key}",
             )
         )
         if len(current_row) == 2:
@@ -191,6 +191,54 @@ def _token_adjust_keyboard(tariff: ServiceTariff) -> InlineKeyboardMarkup:
         )
     rows.append([InlineKeyboardButton(text="Admin panel", callback_data="admin:panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _token_service_key_from_callback(callback_data: str) -> str:
+    prefix = "admin:tokens:svc:"
+    raw = str(callback_data or "").strip()
+    if not raw.startswith(prefix):
+        return ""
+    payload = raw[len(prefix) :].strip().lower()
+    if not payload:
+        return ""
+    with_category, _, maybe_category = payload.rpartition(":")
+    if with_category and maybe_category in set(tariff_categories()):
+        try:
+            service_tariff(with_category)
+            return with_category
+        except KeyError:
+            pass
+    return payload
+
+
+def _token_adjust_payload_from_callback(
+    callback_data: str,
+) -> tuple[str, str, int] | None:
+    prefix = "admin:tokens:adj:"
+    raw = str(callback_data or "").strip()
+    if not raw.startswith(prefix):
+        return None
+    payload = raw[len(prefix) :].strip().lower()
+    if not payload:
+        return None
+    parts = payload.rsplit(":", 2)
+    if len(parts) != 3:
+        return None
+    key, plan_key, delta_raw = parts
+    if not key or not plan_key or not delta_raw:
+        return None
+    try:
+        return key, plan_key, int(delta_raw)
+    except ValueError:
+        return None
+
+
+def _token_reset_key_from_callback(callback_data: str) -> str:
+    prefix = "admin:tokens:reset:"
+    raw = str(callback_data or "").strip()
+    if not raw.startswith(prefix):
+        return ""
+    return raw[len(prefix) :].strip().lower()
 
 
 def _fmt_service_name(key: str) -> str:
@@ -392,11 +440,10 @@ async def admin_tokens_service(callback: CallbackQuery) -> None:
     if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
-    parts = str(callback.data or "").split(":")
-    if len(parts) != 5:
+    key = _token_service_key_from_callback(str(callback.data or ""))
+    if not key:
         await callback.answer("Servis topilmadi", show_alert=True)
         return
-    key = parts[3].strip().lower()
     try:
         tariff = service_tariff(key)
     except KeyError:
@@ -415,21 +462,19 @@ async def admin_tokens_adjust(callback: CallbackQuery) -> None:
     if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
-    parts = str(callback.data or "").split(":")
-    if len(parts) != 6:
+    parsed = _token_adjust_payload_from_callback(str(callback.data or ""))
+    if parsed is None:
         await callback.answer("Format noto'g'ri", show_alert=True)
         return
-    key = parts[3].strip().lower()
-    plan = parts[4].strip().lower()
+    key, plan, delta = parsed
     if plan not in {"free", "premium"}:
         await callback.answer("Plan noto'g'ri", show_alert=True)
         return
     try:
-        delta = int(parts[5])
-    except ValueError:
-        await callback.answer("Delta noto'g'ri", show_alert=True)
+        current = service_tariff(key)
+    except KeyError:
+        await callback.answer("Servis topilmadi", show_alert=True)
         return
-    current = service_tariff(key)
     if plan == "free":
         updated = set_service_tariff_cost(key, free_cost=current.free_cost + delta)
     else:
@@ -447,11 +492,10 @@ async def admin_tokens_reset(callback: CallbackQuery) -> None:
     if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
-    parts = str(callback.data or "").split(":")
-    if len(parts) != 4:
+    key = _token_reset_key_from_callback(str(callback.data or ""))
+    if not key:
         await callback.answer("Format noto'g'ri", show_alert=True)
         return
-    key = parts[3].strip().lower()
     try:
         updated = reset_service_tariff(key)
     except KeyError:

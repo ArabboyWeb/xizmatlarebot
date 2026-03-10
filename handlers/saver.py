@@ -76,7 +76,7 @@ def save_prompt_text() -> str:
         "Misol:\n"
         "<code>https://example.com/file.pdf</code>\n\n"
         "YouTube/Instagram/TikTok uchun Media bo'limidagi "
-        "<b>YouTube Video/Audio</b> oqimidan foydalaning."
+        "<b>YT / Insta / TikTok Saver</b> oqimidan foydalaning."
     )
 
 
@@ -102,7 +102,7 @@ def save_video_redirect_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🎥 Video Saverga o'tish",
+                    text="🎥 YT / Insta / TikTok Saver",
                     callback_data="services:youtube",
                 )
             ],
@@ -526,7 +526,7 @@ async def save_url_handler(
         await message.answer(
             (
                 "<b>YouTube/Instagram/TikTok videolar bitta oqimga o'tkazilgan.</b>\n"
-                "Iltimos, <b>YouTube Video/Audio</b> bo'limidan foydalaning."
+                "Iltimos, <b>YT / Insta / TikTok Saver</b> bo'limidan foydalaning."
             ),
             parse_mode="HTML",
             reply_markup=save_video_redirect_keyboard(),
@@ -536,7 +536,7 @@ async def save_url_handler(
         await message.answer(
             (
                 "<b>YouTube/Instagram/TikTok videolar bitta oqimga o'tkazilgan.</b>\n"
-                "Iltimos, <b>YouTube Video/Audio</b> bo'limidan foydalaning."
+                "Iltimos, <b>YT / Insta / TikTok Saver</b> bo'limidan foydalaning."
             ),
             parse_mode="HTML",
             reply_markup=save_video_redirect_keyboard(),
@@ -601,7 +601,7 @@ async def save_youtube_callback(
     await callback.message.answer(
         (
             "<b>YouTube/Instagram/TikTok videolar bitta oqimga o'tkazilgan.</b>\n"
-            "Iltimos, <b>YouTube Video/Audio</b> bo'limidan foydalaning."
+            "Iltimos, <b>YT / Insta / TikTok Saver</b> bo'limidan foydalaning."
         ),
         parse_mode="HTML",
         reply_markup=save_video_redirect_keyboard(),

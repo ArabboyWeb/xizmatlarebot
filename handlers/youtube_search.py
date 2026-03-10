@@ -175,7 +175,7 @@ def _prompt_text(mode: str, quality: str, audio_bitrate: str) -> str:
     else:
         settings_text = f"Rejim: <b>Video</b>\nSifat: <b>{quality.upper() if quality != 'best' else 'AUTO'}</b>"
     return (
-        "<b>YouTube / Video Saver</b>\n"
+        "<b>YouTube / Instagram / TikTok Saver</b>\n"
         "YouTube qidiruv matni yoki YouTube, Instagram, TikTok link yuboring.\n"
         "YouTube uchun qidiruv ishlaydi, Instagram/TikTok uchun direct link bilan yuklaydi.\n\n"
         f"{settings_text}\n\n"
