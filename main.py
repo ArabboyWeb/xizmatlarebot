@@ -29,7 +29,12 @@ from handlers.wikipedia import router as wikipedia_router
 from handlers.youtube_search import router as youtube_search_router
 from services.ai_store import AIContextMiddleware, AIStore
 from services.analytics_store import AnalyticsMiddleware, AnalyticsStore
-from ui.main_menu import main_menu_text, safe_edit_menu, services_keyboard
+from ui.main_menu import (
+    main_menu_text,
+    safe_edit_menu,
+    section_menu_text,
+    services_keyboard,
+)
 
 DEFAULT_POLLING_RESTART_DELAY_SECONDS = 8
 DEFAULT_TELEGRAM_UPLOAD_LIMIT_MB = 50
@@ -62,33 +67,100 @@ def register_core_handlers(
     upload_limit_bytes: int,
     download_limit_bytes: int,
 ) -> None:
-    @dispatcher.message(CommandStart())
-    async def start_handler(message: Message, state: FSMContext) -> None:
-        await state.clear()
+    async def _menu_profile(ai_store: AIStore, user: object | None) -> dict[str, int | str]:
+        if user is None:
+            return {
+                "user_plan": "free",
+                "token_balance": 0,
+                "referral_count": 0,
+            }
+
+        full_name = " ".join(
+            part
+            for part in [
+                str(getattr(user, "first_name", "") or "").strip(),
+                str(getattr(user, "last_name", "") or "").strip(),
+            ]
+            if part
+        ).strip()
+        profile = await ai_store.ensure_user(
+            user_id=int(getattr(user, "id", 0) or 0),
+            username=str(getattr(user, "username", "") or "").strip(),
+            full_name=full_name,
+        )
+        return {
+            "user_plan": str(profile.get("current_plan", "free") or "free"),
+            "token_balance": int(profile.get("token_balance", 0) or 0),
+            "referral_count": 0,
+        }
+
+    async def _answer_main_menu(
+        message: Message,
+        *,
+        ai_store: AIStore,
+    ) -> None:
         is_admin = is_admin_user_id(message.from_user.id if message.from_user else None)
+        profile = await _menu_profile(ai_store, message.from_user)
         await message.answer(
             main_menu_text(
                 upload_limit_bytes,
                 download_limit_bytes,
                 is_admin=is_admin,
+                **profile,
             ),
             parse_mode="HTML",
             reply_markup=services_keyboard(is_admin=is_admin),
         )
 
-    @dispatcher.message(Command("menu"))
-    async def menu_handler(message: Message, state: FSMContext) -> None:
-        await state.clear()
-        is_admin = is_admin_user_id(message.from_user.id if message.from_user else None)
-        await message.answer(
+    async def _edit_main_menu(
+        callback: CallbackQuery,
+        *,
+        ai_store: AIStore,
+    ) -> None:
+        is_admin = is_admin_user_id(callback.from_user.id if callback.from_user else None)
+        profile = await _menu_profile(ai_store, callback.from_user)
+        await safe_edit_menu(
+            callback,
             main_menu_text(
                 upload_limit_bytes,
                 download_limit_bytes,
                 is_admin=is_admin,
+                **profile,
             ),
-            parse_mode="HTML",
-            reply_markup=services_keyboard(is_admin=is_admin),
+            services_keyboard(is_admin=is_admin),
         )
+
+    async def _edit_section_menu(
+        callback: CallbackQuery,
+        *,
+        section: str,
+        ai_store: AIStore,
+    ) -> None:
+        is_admin = is_admin_user_id(callback.from_user.id if callback.from_user else None)
+        profile = await _menu_profile(ai_store, callback.from_user)
+        await safe_edit_menu(
+            callback,
+            section_menu_text(section, **profile),
+            services_keyboard(is_admin=is_admin, section=section),
+        )
+
+    @dispatcher.message(CommandStart())
+    async def start_handler(
+        message: Message,
+        state: FSMContext,
+        ai_store: AIStore,
+    ) -> None:
+        await state.clear()
+        await _answer_main_menu(message, ai_store=ai_store)
+
+    @dispatcher.message(Command("menu"))
+    async def menu_handler(
+        message: Message,
+        state: FSMContext,
+        ai_store: AIStore,
+    ) -> None:
+        await state.clear()
+        await _answer_main_menu(message, ai_store=ai_store)
 
     @dispatcher.message(Command("help"))
     async def help_handler(message: Message) -> None:
@@ -113,19 +185,38 @@ def register_core_handlers(
         await message.answer(text, parse_mode="HTML")
 
     @dispatcher.callback_query(F.data == "services:back")
-    async def back_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    async def back_callback_handler(
+        callback: CallbackQuery,
+        state: FSMContext,
+        ai_store: AIStore,
+    ) -> None:
         await state.clear()
         await callback.answer()
-        is_admin = is_admin_user_id(callback.from_user.id if callback.from_user else None)
-        await safe_edit_menu(
-            callback,
-            main_menu_text(
-                upload_limit_bytes,
-                download_limit_bytes,
-                is_admin=is_admin,
-            ),
-            services_keyboard(is_admin=is_admin),
-        )
+        await _edit_main_menu(callback, ai_store=ai_store)
+
+    @dispatcher.callback_query(F.data == "menu:main")
+    async def menu_main_callback_handler(
+        callback: CallbackQuery,
+        state: FSMContext,
+        ai_store: AIStore,
+    ) -> None:
+        await state.clear()
+        await callback.answer()
+        await _edit_main_menu(callback, ai_store=ai_store)
+
+    @dispatcher.callback_query(F.data.startswith("menu:section:"))
+    async def menu_section_callback_handler(
+        callback: CallbackQuery,
+        state: FSMContext,
+        ai_store: AIStore,
+    ) -> None:
+        section = str(callback.data or "").rsplit(":", 1)[-1].strip().lower()
+        if section not in {"ai", "media", "tools", "search", "cabinet"}:
+            await callback.answer("Bo'lim topilmadi", show_alert=True)
+            return
+        await state.clear()
+        await callback.answer()
+        await _edit_section_menu(callback, section=section, ai_store=ai_store)
 
 
 async def run_polling_forever(
