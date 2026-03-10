@@ -42,12 +42,14 @@ pip install -r requirements.txt
    - `RAPIDAPI_KEY`
 5. AI uchun:
    - `OPENROUTER_API_KEY`
-   - `BOT_FREE_DAILY_TOKENS`
+   - `BOT_FREE_RESET_TOKENS`
+   - `BOT_FREE_RESET_HOURS`
    - `BOT_PREMIUM_MONTHLY_TOKENS`
    - `BOT_AI_FREE_MIN_COST`
    - `BOT_AI_PREMIUM_MIN_COST`
    - `BOT_REFERRAL_INVITER_BONUS`
    - `BOT_REFERRAL_INVITEE_BONUS`
+   - `BOT_USERNAME`
    - `AI_LOG_CHANNEL_ID` yoki botni kanalga admin qilib qo'shing
    - `AI_LOG_CHANNEL_LINK`
 6. Admin panel uchun:

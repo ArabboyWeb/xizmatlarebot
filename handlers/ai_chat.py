@@ -33,6 +33,7 @@ from services.ai_gateway import (
 )
 from services.ai_store import AIStore
 from services.token_billing import ensure_balance
+from services.token_pricing import free_reset_hours, free_reset_tokens
 
 router = Router(name="ai_chat")
 
@@ -220,7 +221,10 @@ def _dashboard_text(user: dict[str, object]) -> str:
     ]
     rows.append(f"💳 Token balans: <b>{token_balance}</b>")
     if current_plan == "free":
-        rows.append(f"🔄 Daily reset: <b>{html.escape(free_reset_date)}</b>")
+        rows.append(
+            f"🔄 Refill: <b>{free_reset_tokens()} token / {free_reset_hours()} soat</b>"
+        )
+        rows.append(f"⏱ Keyingi refill: <b>{html.escape(free_reset_date)}</b>")
     else:
         rows.append(f"🔄 Monthly reset: <b>{html.escape(reset_date)}</b>")
     rows.append(f"📥 Input tokenlar: <b>{total_in}</b>")
@@ -235,7 +239,7 @@ def _plans_text() -> str:
     return (
         "<b>📚 AI tariflar</b>\n\n"
         "<b>🟢 Free</b>\n"
-        "- kunlik token paketi\n"
+        f"- har {free_reset_hours()} soatda {free_reset_tokens()} token refill\n"
         "- har so'rov orasida 5 soniya kutish\n"
         "- AI, qidiruv va media servislar token bilan ishlaydi\n"
         "- OpenRouter free modellar\n\n"

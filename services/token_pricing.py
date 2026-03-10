@@ -31,6 +31,117 @@ _TOKEN_OVERRIDES_PATH = (
 )
 _OVERRIDE_CACHE: dict[str, dict[str, int]] = {}
 _OVERRIDE_MTIME_NS = -1
+_ECONOMY_SETTINGS_PATH = (
+    Path(__file__).resolve().parent.parent / "data" / "economy_settings.json"
+)
+_ECONOMY_CACHE: dict[str, int] = {}
+_ECONOMY_MTIME_NS = -1
+
+
+def _economy_defaults() -> dict[str, int]:
+    return {
+        "referral_inviter_bonus": max(1, _read_int("BOT_REFERRAL_INVITER_BONUS", 40)),
+        "referral_invitee_bonus": max(1, _read_int("BOT_REFERRAL_INVITEE_BONUS", 20)),
+        "free_reset_tokens": max(1, _read_int("BOT_FREE_RESET_TOKENS", 20)),
+        "free_reset_hours": max(1, _read_int("BOT_FREE_RESET_HOURS", 12)),
+    }
+
+
+_ECONOMY_MINIMUMS: dict[str, int] = {
+    "referral_inviter_bonus": 1,
+    "referral_invitee_bonus": 1,
+    "free_reset_tokens": 1,
+    "free_reset_hours": 1,
+}
+
+
+def _normalize_economy_payload(raw: object) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    defaults = _economy_defaults()
+    for key in defaults:
+        if key not in raw:
+            continue
+        try:
+            value = int(raw[key])
+        except (TypeError, ValueError):
+            continue
+        normalized[key] = max(_ECONOMY_MINIMUMS[key], value)
+    return normalized
+
+
+def _load_economy_overrides() -> dict[str, int]:
+    global _ECONOMY_CACHE, _ECONOMY_MTIME_NS
+    if not _ECONOMY_SETTINGS_PATH.exists():
+        _ECONOMY_CACHE = {}
+        _ECONOMY_MTIME_NS = -1
+        return {}
+    try:
+        stat = _ECONOMY_SETTINGS_PATH.stat()
+        mtime_ns = int(stat.st_mtime_ns)
+    except OSError:
+        _ECONOMY_CACHE = {}
+        _ECONOMY_MTIME_NS = -1
+        return {}
+    if mtime_ns == _ECONOMY_MTIME_NS:
+        return dict(_ECONOMY_CACHE)
+    try:
+        payload = json.loads(_ECONOMY_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    normalized = _normalize_economy_payload(payload)
+    _ECONOMY_CACHE = dict(normalized)
+    _ECONOMY_MTIME_NS = mtime_ns
+    return normalized
+
+
+def _save_economy_overrides(overrides: dict[str, int]) -> None:
+    global _ECONOMY_CACHE, _ECONOMY_MTIME_NS
+    _ECONOMY_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = _ECONOMY_SETTINGS_PATH.with_suffix(".tmp")
+    temp_path.write_text(
+        json.dumps(overrides, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp_path.replace(_ECONOMY_SETTINGS_PATH)
+    try:
+        _ECONOMY_MTIME_NS = int(_ECONOMY_SETTINGS_PATH.stat().st_mtime_ns)
+    except OSError:
+        _ECONOMY_MTIME_NS = -1
+    _ECONOMY_CACHE = dict(overrides)
+
+
+def economy_settings() -> dict[str, int]:
+    settings = _economy_defaults()
+    settings.update(_load_economy_overrides())
+    return settings
+
+
+def set_economy_setting(name: str, value: int) -> dict[str, int]:
+    key = str(name or "").strip().lower()
+    defaults = _economy_defaults()
+    if key not in defaults:
+        raise KeyError(f"Setting topilmadi: {name}")
+    normalized_value = max(_ECONOMY_MINIMUMS[key], int(value))
+    overrides = _load_economy_overrides()
+    if normalized_value == defaults[key]:
+        overrides.pop(key, None)
+    else:
+        overrides[key] = normalized_value
+    _save_economy_overrides(overrides)
+    return economy_settings()
+
+
+def reset_economy_setting(name: str) -> dict[str, int]:
+    key = str(name or "").strip().lower()
+    defaults = _economy_defaults()
+    if key not in defaults:
+        raise KeyError(f"Setting topilmadi: {name}")
+    overrides = _load_economy_overrides()
+    overrides.pop(key, None)
+    _save_economy_overrides(overrides)
+    return economy_settings()
 
 
 def _normalize_override_payload(raw: object) -> dict[str, dict[str, int]]:
@@ -103,11 +214,16 @@ def normalize_plan(plan: str) -> str:
     return "premium" if normalized == "premium" else "free"
 
 
+def free_reset_tokens() -> int:
+    return int(economy_settings()["free_reset_tokens"])
+
+
+def free_reset_hours() -> int:
+    return int(economy_settings()["free_reset_hours"])
+
+
 def free_daily_tokens() -> int:
-    return max(
-        20,
-        _read_int("BOT_FREE_DAILY_TOKENS", _read_int("AI_FREE_DAILY_REQUESTS", 40)),
-    )
+    return free_reset_tokens()
 
 
 def premium_monthly_tokens() -> int:
@@ -121,11 +237,11 @@ def premium_monthly_tokens() -> int:
 
 
 def referral_inviter_bonus() -> int:
-    return max(10, _read_int("BOT_REFERRAL_INVITER_BONUS", 40))
+    return int(economy_settings()["referral_inviter_bonus"])
 
 
 def referral_invitee_bonus() -> int:
-    return max(5, _read_int("BOT_REFERRAL_INVITEE_BONUS", 20))
+    return int(economy_settings()["referral_invitee_bonus"])
 
 
 def ai_min_cost(plan: str) -> int:

@@ -49,7 +49,11 @@ def _main_rows(is_admin: bool) -> list[list[InlineKeyboardButton]]:
     return rows
 
 
-def _section_rows(section: MenuSection) -> list[list[InlineKeyboardButton]]:
+def _section_rows(
+    section: MenuSection,
+    *,
+    referral_link: str = "",
+) -> list[list[InlineKeyboardButton]]:
     if section == "ai":
         return [
             [
@@ -142,7 +146,13 @@ def _section_rows(section: MenuSection) -> list[list[InlineKeyboardButton]]:
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="menu:main")],
         ]
     if section == "cabinet":
-        return [
+        rows = [
+            [
+                InlineKeyboardButton(
+                    text="👥 Referral markazi",
+                    callback_data="cabinet:referral",
+                )
+            ],
             [
                 InlineKeyboardButton(
                     text="💳 Balans tafsiloti",
@@ -158,6 +168,12 @@ def _section_rows(section: MenuSection) -> list[list[InlineKeyboardButton]]:
             ],
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="menu:main")],
         ]
+        if referral_link.startswith("https://t.me/"):
+            rows.insert(
+                1,
+                [InlineKeyboardButton(text="🔗 Referral link", url=referral_link)],
+            )
+        return rows
     return _main_rows(False)
 
 
@@ -165,8 +181,13 @@ def services_keyboard(
     is_admin: bool = False,
     *,
     section: MenuSection = "main",
+    referral_link: str = "",
 ) -> InlineKeyboardMarkup:
-    rows = _main_rows(is_admin) if section == "main" else _section_rows(section)
+    rows = (
+        _main_rows(is_admin)
+        if section == "main"
+        else _section_rows(section, referral_link=referral_link)
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -211,8 +232,6 @@ def main_menu_text(
             f"\n- Do'stingizga: <b>{int(referral_invitee_bonus)}</b> token"
             f"\n- Sizga: <b>{int(referral_inviter_bonus)}</b> token"
         )
-    if referral_link:
-        text += f"\n\n🔗 Referal linkingiz: <code>{referral_link}</code>"
     return text
 
 
@@ -228,6 +247,10 @@ def section_menu_text(
     lifetime_tokens_spent: int = 0,
     referral_inviter_bonus: int = 0,
     referral_invitee_bonus: int = 0,
+    free_reset_tokens: int = 0,
+    free_reset_hours: int = 0,
+    free_reset_date: str = "",
+    reset_date: str = "",
 ) -> str:
     if section == "ai":
         return (
@@ -273,8 +296,21 @@ def section_menu_text(
             f"👫 Referal: <b>{max(0, int(referral_count))} ta</b>\n"
             f"📈 Olingan: <b>{_format_balance(lifetime_tokens_earned)} token</b>\n"
             f"📉 Sarflangan: <b>{_format_balance(lifetime_tokens_spent)} token</b>\n\n"
-            "Balans tafsiloti va Premium tariflar uchun tugmalardan foydalaning."
+            "Referral markazi, balans va tariflar uchun tugmalardan foydalaning."
         )
+        if str(user_plan or "").strip().lower() == "free":
+            reset_label = str(free_reset_date or "").replace("T", " ")[:16]
+            if free_reset_tokens > 0 and free_reset_hours > 0:
+                text += (
+                    f"\n\n🔄 Free refill: <b>{int(free_reset_tokens)} token / "
+                    f"{int(free_reset_hours)} soat</b>"
+                )
+            if reset_label:
+                text += f"\n⏱ Keyingi refill: <b>{reset_label}</b>"
+        else:
+            plan_reset_label = str(reset_date or "").replace("T", " ")[:16]
+            if plan_reset_label:
+                text += f"\n⏱ Keyingi plan reset: <b>{plan_reset_label}</b>"
         if referrer_id > 0:
             text += f"\n\n👥 Sizni taklif qilgan ID: <code>{int(referrer_id)}</code>"
         if referral_inviter_bonus > 0 or referral_invitee_bonus > 0:
@@ -283,10 +319,56 @@ def section_menu_text(
                 f"\n- Do'stingizga: <b>{int(referral_invitee_bonus)}</b> token"
                 f"\n- Sizga: <b>{int(referral_inviter_bonus)}</b> token"
             )
-        if referral_link:
-            text += f"\n\n🔗 Referal link: <code>{referral_link}</code>"
         return text
     return ""
+
+
+def referral_menu_text(
+    *,
+    referral_count: int = 0,
+    referral_link: str = "",
+    referrer_id: int = 0,
+    referral_inviter_bonus: int = 0,
+    referral_invitee_bonus: int = 0,
+    free_reset_tokens: int = 0,
+    free_reset_hours: int = 0,
+    free_reset_date: str = "",
+    **_: object,
+) -> str:
+    rows = [
+        "<b>👥 Referral markazi</b>",
+        "",
+        f"👫 Taklif qilgan do'stlaringiz: <b>{max(0, int(referral_count))} ta</b>",
+    ]
+    if referrer_id > 0:
+        rows.append(f"👥 Sizni taklif qilgan ID: <code>{int(referrer_id)}</code>")
+    if referral_inviter_bonus > 0 or referral_invitee_bonus > 0:
+        rows.append("")
+        rows.append("🎁 Referal bonuslari:")
+        rows.append(f"- Do'stingizga: <b>{int(referral_invitee_bonus)}</b> token")
+        rows.append(f"- Sizga: <b>{int(referral_inviter_bonus)}</b> token")
+    if referral_link:
+        rows.append("")
+        rows.append(f"🔗 Referal link: <code>{referral_link}</code>")
+    if free_reset_tokens > 0 and free_reset_hours > 0:
+        rows.append("")
+        rows.append(
+            f"🔄 Free refill: <b>{int(free_reset_tokens)} token / {int(free_reset_hours)} soat</b>"
+        )
+    refill_label = str(free_reset_date or "").replace("T", " ")[:16]
+    if refill_label:
+        rows.append(f"⏱ Keyingi refill: <b>{refill_label}</b>")
+    rows.append("")
+    rows.append("Do'stingiz botga sizning linkingiz orqali kirsa, ikkalangiz ham bonus olasiz.")
+    return "\n".join(rows)
+
+
+def referral_keyboard(referral_link: str = "") -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if referral_link.startswith("https://t.me/"):
+        rows.append([InlineKeyboardButton(text="🔗 Linkni ochish", url=referral_link)])
+    rows.append([InlineKeyboardButton(text="⬅️ Kabinet", callback_data="menu:section:cabinet")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def safe_edit_menu(

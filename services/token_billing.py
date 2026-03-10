@@ -6,7 +6,22 @@ from typing import Any
 from aiogram.types import CallbackQuery, Message
 
 from services.ai_store import AIStore
-from services.token_pricing import ServiceTariff, service_cost, service_tariff
+from services.token_pricing import (
+    ServiceTariff,
+    resolve_service_key,
+    service_cost,
+    service_tariff,
+)
+
+COMPLIMENTARY_SERVICE_KEYS = {
+    "youtube_download_video",
+    "youtube_download_audio",
+    "social_download",
+}
+
+
+def is_complimentary_service(service_key: str) -> bool:
+    return resolve_service_key(service_key) in COMPLIMENTARY_SERVICE_KEYS
 
 
 def event_identity(event: Message | CallbackQuery) -> tuple[int, str, str]:
@@ -42,6 +57,16 @@ async def preview_charge(
         if isinstance(custom_cost, int) and custom_cost > 0
         else service_cost(service_key, plan=str(user.get("current_plan", "free") or "free"))
     )
+    effective_key = resolve_service_key(service_key)
+    if cost > 0 and is_complimentary_service(effective_key):
+        if await ai_store.can_use_complimentary_service(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            service_key=effective_key,
+            user=user,
+        ):
+            cost = 0
     tariff = service_tariff(service_key)
     return user, tariff, cost, user_id, username, full_name
 
@@ -94,3 +119,34 @@ async def ensure_balance(
             reply_markup=reply_markup,
         )
     return None
+
+
+async def finalize_charge(
+    ai_store: AIStore,
+    *,
+    service_key: str,
+    user_id: int,
+    username: str,
+    full_name: str,
+    amount: int,
+) -> dict[str, Any]:
+    token_amount = max(0, int(amount))
+    if token_amount > 0:
+        return await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=token_amount,
+        )
+    if is_complimentary_service(service_key):
+        return await ai_store.consume_complimentary_service(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            service_key=service_key,
+        )
+    return await ai_store.ensure_user(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+    )

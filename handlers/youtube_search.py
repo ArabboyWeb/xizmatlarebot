@@ -31,7 +31,7 @@ from services.social_client import (
     is_social_video_url,
     social_platform_name,
 )
-from services.token_billing import ensure_balance
+from services.token_billing import ensure_balance, finalize_charge
 from services.youtube_client import AUDIO_BITRATES, VIDEO_QUALITIES, download_youtube, search_youtube
 
 router = Router(name="youtube_search")
@@ -177,7 +177,8 @@ def _prompt_text(mode: str, quality: str, audio_bitrate: str) -> str:
     return (
         "<b>YouTube / Instagram / TikTok Saver</b>\n"
         "YouTube qidiruv matni yoki YouTube, Instagram, TikTok link yuboring.\n"
-        "YouTube uchun qidiruv ishlaydi, Instagram/TikTok uchun direct link bilan yuklaydi.\n\n"
+        "YouTube uchun qidiruv ishlaydi, Instagram/TikTok uchun direct link bilan yuklaydi.\n"
+        "Free foydalanuvchi direct link bilan har refill siklida 1 marta tekin yuklay oladi.\n\n"
         f"{settings_text}\n\n"
         "Misollar:\n"
         "<code>lofi hip hop mix</code>\n"
@@ -516,7 +517,9 @@ async def youtube_input_handler(
             )
         except Exception:
             return
-        await ai_store.charge_tokens(
+        await finalize_charge(
+            ai_store,
+            service_key=service_key,
             user_id=user_id,
             username=username,
             full_name=full_name,
@@ -562,7 +565,9 @@ async def youtube_input_handler(
             )
         except Exception:
             return
-        await ai_store.charge_tokens(
+        await finalize_charge(
+            ai_store,
+            service_key="social_download",
             user_id=user_id,
             username=username,
             full_name=full_name,
@@ -619,7 +624,9 @@ async def youtube_input_handler(
             audio_bitrate=audio_bitrate,
         ),
     )
-    await ai_store.charge_tokens(
+    await finalize_charge(
+        ai_store,
+        service_key=service_key,
         user_id=user_id,
         username=username,
         full_name=full_name,

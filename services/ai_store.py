@@ -12,10 +12,12 @@ from aiogram import BaseMiddleware
 from services.ai_gateway import MODEL_ALIAS_AUTO, clamp_selected_plan, effective_selected_plan
 from services.token_pricing import (
     free_daily_tokens,
+    free_reset_hours,
     normalize_plan,
     premium_monthly_tokens,
     referral_invitee_bonus,
     referral_inviter_bonus,
+    resolve_service_key,
 )
 
 try:
@@ -24,6 +26,11 @@ except Exception:  # pragma: no cover
     asyncpg = None
 
 DEFAULT_AI_DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "ai_store.json"
+COMPLIMENTARY_MEDIA_SERVICE_KEYS = {
+    "youtube_download_video",
+    "youtube_download_audio",
+    "social_download",
+}
 
 
 def _utc_now() -> datetime:
@@ -74,6 +81,10 @@ def _free_daily_requests() -> int:
     return free_daily_tokens()
 
 
+def _free_reset_tokens() -> int:
+    return free_daily_tokens()
+
+
 def _free_cooldown_seconds() -> int:
     return max(0, _read_int("AI_FREE_COOLDOWN_SECONDS", 5))
 
@@ -87,15 +98,12 @@ def _normalize_selected_model(value: Any) -> str:
     return normalized or MODEL_ALIAS_AUTO
 
 
-def _next_daily_reset(now: datetime | None = None) -> datetime:
+def _next_free_reset(now: datetime | None = None) -> datetime:
     base = now or _utc_now()
-    next_day = (base + timedelta(days=1)).date()
-    return datetime(
-        year=next_day.year,
-        month=next_day.month,
-        day=next_day.day,
-        tzinfo=timezone.utc,
-    )
+    interval = timedelta(hours=max(1, free_reset_hours()))
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    completed_steps = int((base - epoch) // interval)
+    return epoch + interval * (completed_steps + 1)
 
 
 def _next_monthly_reset(now: datetime | None = None) -> datetime:
@@ -129,6 +137,13 @@ def _usage_event(
         "ok": bool(ok),
         "error_text": str(error_text or "").strip(),
     }
+
+
+def _complimentary_service_bucket(service_key: str) -> str:
+    key = resolve_service_key(service_key)
+    if key in COMPLIMENTARY_MEDIA_SERVICE_KEYS:
+        return "media"
+    return ""
 
 
 class AIStore:
@@ -195,6 +210,8 @@ class AIStore:
             referrer_id BIGINT,
             referral_count BIGINT NOT NULL DEFAULT 0,
             referral_bonus_claimed BOOLEAN NOT NULL DEFAULT FALSE,
+            free_media_trial_used BOOLEAN NOT NULL DEFAULT FALSE,
+            free_media_trial_cycle_end TIMESTAMPTZ,
             lifetime_tokens_earned BIGINT NOT NULL DEFAULT 0,
             lifetime_tokens_spent BIGINT NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -233,6 +250,12 @@ class AIStore:
             )
             await connection.execute(
                 "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS referral_bonus_claimed BOOLEAN NOT NULL DEFAULT FALSE;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS free_media_trial_used BOOLEAN NOT NULL DEFAULT FALSE;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS free_media_trial_cycle_end TIMESTAMPTZ;"
             )
             await connection.execute(
                 "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS lifetime_tokens_earned BIGINT NOT NULL DEFAULT 0;"
@@ -280,16 +303,18 @@ class AIStore:
             "current_plan": "free",
             "selected_plan": MODEL_ALIAS_AUTO,
             "selected_model": MODEL_ALIAS_AUTO,
-            "token_balance": _free_daily_requests(),
+            "token_balance": _free_reset_tokens(),
             "free_requests_used": 0,
-            "free_reset_date": _iso(_next_daily_reset(now)),
-            "reset_date": _iso(_next_daily_reset(now)),
+            "free_reset_date": _iso(_next_free_reset(now)),
+            "reset_date": _iso(_next_free_reset(now)),
             "last_request_at": "",
             "total_prompt_tokens": 0,
             "total_completion_tokens": 0,
             "referrer_id": 0,
             "referral_count": 0,
             "referral_bonus_claimed": False,
+            "free_media_trial_used": False,
+            "free_media_trial_cycle_end": _iso(_next_free_reset(now)),
             "lifetime_tokens_earned": 0,
             "lifetime_tokens_spent": 0,
             "created_at": _iso(now),
@@ -319,18 +344,26 @@ class AIStore:
         )
 
         free_reset_date = _parse_dt(user.get("free_reset_date"))
+        if current_plan == "free":
+            next_free_reset = _next_free_reset(now)
+            if free_reset_date > next_free_reset:
+                free_reset_date = next_free_reset
+                user["free_reset_date"] = _iso(free_reset_date)
         if now >= free_reset_date:
             user["free_requests_used"] = 0
-            user["free_reset_date"] = _iso(_next_daily_reset(now))
+            free_reset_date = _next_free_reset(now)
+            user["free_reset_date"] = _iso(free_reset_date)
+            if current_plan == "free":
+                user["token_balance"] = max(
+                    int(user.get("token_balance", 0) or 0),
+                    _free_reset_tokens(),
+                )
+                user["reset_date"] = _iso(free_reset_date)
 
         reset_date = _parse_dt(user.get("reset_date"))
         if current_plan == "free":
-            if now >= reset_date:
-                user["token_balance"] = max(
-                    int(user.get("token_balance", 0) or 0),
-                    _free_daily_requests(),
-                )
-                user["reset_date"] = _iso(_next_daily_reset(now))
+            if reset_date != free_reset_date:
+                user["reset_date"] = _iso(free_reset_date)
         elif now >= reset_date:
             user["token_balance"] = max(
                 int(user.get("token_balance", 0) or 0),
@@ -341,6 +374,12 @@ class AIStore:
         user["referrer_id"] = int(user.get("referrer_id", 0) or 0)
         user["referral_count"] = max(0, int(user.get("referral_count", 0) or 0))
         user["referral_bonus_claimed"] = bool(user.get("referral_bonus_claimed", False))
+        current_free_cycle = str(user.get("free_reset_date", "") or "")
+        if str(user.get("free_media_trial_cycle_end", "") or "") != current_free_cycle:
+            user["free_media_trial_cycle_end"] = current_free_cycle
+            user["free_media_trial_used"] = False
+        else:
+            user["free_media_trial_used"] = bool(user.get("free_media_trial_used", False))
         user["lifetime_tokens_earned"] = max(
             0, int(user.get("lifetime_tokens_earned", 0) or 0)
         )
@@ -425,8 +464,8 @@ class AIStore:
                     int(user_id),
                     username,
                     full_name,
-                    _free_daily_requests(),
-                    _next_daily_reset(),
+                    _free_reset_tokens(),
+                    _next_free_reset(),
                 )
                 if row is None:
                     raise RuntimeError("AI foydalanuvchi yozuvi yaratilmadi.")
@@ -453,38 +492,68 @@ class AIStore:
         free_reset_date = _parse_dt(row["free_reset_date"])
         reset_date = _parse_dt(row["reset_date"])
 
-        if now >= free_reset_date:
-            free_requests_used = 0
-            free_reset_date = _next_daily_reset(now)
-            await connection.execute(
-                """
-                UPDATE ai_users
-                SET free_requests_used = 0,
-                    free_reset_date = $2,
-                    updated_at = NOW()
-                WHERE user_id = $1
-                """,
-                int(row["user_id"]),
-                free_reset_date,
-            )
-
         if current_plan == "free":
-            if now >= reset_date:
-                token_balance = max(token_balance, _free_daily_requests())
-                reset_date = _next_daily_reset(now)
+            next_free_reset = _next_free_reset(now)
+            if free_reset_date > next_free_reset:
+                free_reset_date = next_free_reset
+                reset_date = next_free_reset
                 await connection.execute(
                     """
                     UPDATE ai_users
-                    SET token_balance = $2,
-                        reset_date = $3,
+                    SET free_reset_date = $2,
+                        reset_date = $2,
                         updated_at = NOW()
                     WHERE user_id = $1
                     """,
                     int(row["user_id"]),
-                    token_balance,
-                    reset_date,
+                    free_reset_date,
                 )
-        elif now >= reset_date:
+
+        if now >= free_reset_date:
+            free_requests_used = 0
+            free_reset_date = _next_free_reset(now)
+            if current_plan == "free":
+                token_balance = max(token_balance, _free_reset_tokens())
+                reset_date = free_reset_date
+                await connection.execute(
+                    """
+                    UPDATE ai_users
+                    SET free_requests_used = 0,
+                        free_reset_date = $2,
+                        token_balance = $3,
+                        reset_date = $2,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    int(row["user_id"]),
+                    free_reset_date,
+                    token_balance,
+                )
+            else:
+                await connection.execute(
+                    """
+                    UPDATE ai_users
+                    SET free_requests_used = 0,
+                        free_reset_date = $2,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    int(row["user_id"]),
+                    free_reset_date,
+                )
+        elif current_plan == "free" and reset_date != free_reset_date:
+            reset_date = free_reset_date
+            await connection.execute(
+                """
+                UPDATE ai_users
+                SET reset_date = $2,
+                    updated_at = NOW()
+                WHERE user_id = $1
+                """,
+                int(row["user_id"]),
+                reset_date,
+            )
+        if current_plan != "free" and now >= reset_date:
             token_balance = max(token_balance, _plan_monthly_credits(current_plan))
             reset_date = _next_monthly_reset(now)
             await connection.execute(
@@ -498,6 +567,24 @@ class AIStore:
                 int(row["user_id"]),
                 token_balance,
                 reset_date,
+            )
+
+        trial_cycle_end_raw = row["free_media_trial_cycle_end"]
+        trial_cycle_end = (
+            _iso(_parse_dt(trial_cycle_end_raw)) if trial_cycle_end_raw else ""
+        )
+        current_cycle_end = _iso(free_reset_date)
+        if trial_cycle_end != current_cycle_end:
+            await connection.execute(
+                """
+                UPDATE ai_users
+                SET free_media_trial_used = FALSE,
+                    free_media_trial_cycle_end = $2,
+                    updated_at = NOW()
+                WHERE user_id = $1
+                """,
+                int(row["user_id"]),
+                free_reset_date,
             )
 
         final_row = await connection.fetchrow(
@@ -530,6 +617,12 @@ class AIStore:
             "referrer_id": int(row["referrer_id"] or 0),
             "referral_count": int(row["referral_count"] or 0),
             "referral_bonus_claimed": bool(row["referral_bonus_claimed"]),
+            "free_media_trial_used": bool(row["free_media_trial_used"]),
+            "free_media_trial_cycle_end": (
+                _iso(_parse_dt(row["free_media_trial_cycle_end"]))
+                if row["free_media_trial_cycle_end"]
+                else ""
+            ),
             "lifetime_tokens_earned": int(row["lifetime_tokens_earned"] or 0),
             "lifetime_tokens_spent": int(row["lifetime_tokens_spent"] or 0),
             "created_at": _iso(_parse_dt(row["created_at"])),
@@ -735,7 +828,7 @@ class AIStore:
                             WHERE user_id = $1
                             """,
                             int(user_id),
-                            _free_daily_requests(),
+                            int(credits_used),
                             int(prompt_tokens),
                             int(completion_tokens),
                         )
@@ -850,8 +943,8 @@ class AIStore:
         )
         now = _utc_now()
         if normalized_plan == "free":
-            target_balance = _free_daily_requests()
-            target_reset = _next_daily_reset(now)
+            target_balance = _free_reset_tokens()
+            target_reset = _next_free_reset(now)
         else:
             target_balance = (
                 int(credits)
@@ -872,13 +965,15 @@ class AIStore:
                         free_requests_used = 0,
                         free_reset_date = $4,
                         reset_date = $5,
+                        free_media_trial_used = FALSE,
+                        free_media_trial_cycle_end = $4,
                         updated_at = NOW()
                     WHERE user_id = $1
                     """,
                     int(user_id),
                     normalized_plan,
                     int(target_balance),
-                    _next_daily_reset(now),
+                    _next_free_reset(now),
                     target_reset,
                 )
                 row = await connection.fetchrow(
@@ -905,8 +1000,10 @@ class AIStore:
             record["selected_model"] = MODEL_ALIAS_AUTO
             record["token_balance"] = int(target_balance)
             record["free_requests_used"] = 0
-            record["free_reset_date"] = _iso(_next_daily_reset(now))
+            record["free_reset_date"] = _iso(_next_free_reset(now))
             record["reset_date"] = _iso(target_reset)
+            record["free_media_trial_used"] = False
+            record["free_media_trial_cycle_end"] = record["free_reset_date"]
             record["updated_at"] = _iso(now)
             await self._save_locked()
             return json.loads(json.dumps(record))
@@ -1043,6 +1140,104 @@ class AIStore:
             record["selected_model"] = normalized_selected_model
             record["updated_at"] = _iso(_utc_now())
             await self._save_locked()
+            return json.loads(json.dumps(record))
+
+    async def can_use_complimentary_service(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        service_key: str,
+        user: dict[str, Any] | None = None,
+    ) -> bool:
+        if _complimentary_service_bucket(service_key) != "media":
+            return False
+        record = user or await self.ensure_user(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+        )
+        if normalize_plan(str(record.get("current_plan", "free") or "free")) != "free":
+            return False
+        current_cycle = str(record.get("free_reset_date", "") or "")
+        trial_cycle = str(record.get("free_media_trial_cycle_end", "") or "")
+        if trial_cycle != current_cycle:
+            return True
+        return not bool(record.get("free_media_trial_used", False))
+
+    async def consume_complimentary_service(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        service_key: str,
+    ) -> dict[str, Any]:
+        if _complimentary_service_bucket(service_key) != "media":
+            return await self.ensure_user(
+                user_id=user_id,
+                username=username,
+                full_name=full_name,
+            )
+        await self.ensure_user(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+        )
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                async with connection.transaction():
+                    row = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                        int(user_id),
+                    )
+                    if row is None:
+                        raise RuntimeError("AI foydalanuvchi topilmadi.")
+                    current_plan = normalize_plan(str(row["current_plan"] or "free"))
+                    if current_plan == "free":
+                        free_reset_date = _parse_dt(row["free_reset_date"])
+                        trial_cycle_end = (
+                            _iso(_parse_dt(row["free_media_trial_cycle_end"]))
+                            if row["free_media_trial_cycle_end"]
+                            else ""
+                        )
+                        current_cycle_end = _iso(free_reset_date)
+                        used = bool(row["free_media_trial_used"])
+                        if trial_cycle_end != current_cycle_end or not used:
+                            await connection.execute(
+                                """
+                                UPDATE ai_users
+                                SET free_media_trial_used = TRUE,
+                                    free_media_trial_cycle_end = $2,
+                                    updated_at = NOW()
+                                WHERE user_id = $1
+                                """,
+                                int(user_id),
+                                free_reset_date,
+                            )
+                    updated = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1",
+                        int(user_id),
+                    )
+                if updated is None:
+                    raise RuntimeError("AI foydalanuvchi topilmadi.")
+                return self._serialize_row(updated)
+
+        await self._ensure_loaded()
+        async with self._lock:
+            users = self._data.setdefault("users", {})
+            record = users.get(str(int(user_id)))
+            if not isinstance(record, dict):
+                raise RuntimeError("AI foydalanuvchi topilmadi.")
+            self._normalize_user_locked(record, username=username, full_name=full_name)
+            if normalize_plan(str(record.get("current_plan", "free") or "free")) == "free":
+                record["free_media_trial_used"] = True
+                record["free_media_trial_cycle_end"] = str(
+                    record.get("free_reset_date", "") or ""
+                )
+                record["updated_at"] = _iso(_utc_now())
+                await self._save_locked()
             return json.loads(json.dumps(record))
 
     async def charge_tokens(

@@ -15,9 +15,12 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from services.analytics_store import AnalyticsStore
 from services.token_pricing import (
     ServiceTariff,
+    economy_settings,
     list_tariffs,
+    reset_economy_setting,
     reset_service_tariff,
     service_tariff,
+    set_economy_setting,
     set_service_tariff_cost,
     tariff_categories,
 )
@@ -36,6 +39,20 @@ TOKEN_CATEGORY_LABELS = {
     "media": "Media",
     "productivity": "Productivity",
     "utility": "Utility",
+}
+
+ECONOMY_SETTING_LABELS = {
+    "referral_inviter_bonus": "Taklif qiluvchiga bonus",
+    "referral_invitee_bonus": "Yangi user bonusi",
+    "free_reset_tokens": "Free refill token",
+    "free_reset_hours": "Free refill soat",
+}
+
+ECONOMY_SETTING_DELTAS = {
+    "referral_inviter_bonus": (-10, -5, 5, 10),
+    "referral_invitee_bonus": (-10, -5, 5, 10),
+    "free_reset_tokens": (-10, -5, 5, 10),
+    "free_reset_hours": (-6, -1, 1, 6),
 }
 
 
@@ -66,7 +83,13 @@ def admin_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Statistika", callback_data="admin:stats"),
                 InlineKeyboardButton(text="Foydalanuvchilar", callback_data="admin:users"),
             ],
-            [InlineKeyboardButton(text="Token tariflar", callback_data="admin:tokens")],
+            [
+                InlineKeyboardButton(text="Token tariflar", callback_data="admin:tokens"),
+                InlineKeyboardButton(
+                    text="Referral & reset",
+                    callback_data="admin:economy",
+                ),
+            ],
             [InlineKeyboardButton(text="Reklama yuborish", callback_data="admin:broadcast")],
             [InlineKeyboardButton(text="Yangilash", callback_data="admin:panel")],
         ]
@@ -241,6 +264,47 @@ def _token_reset_key_from_callback(callback_data: str) -> str:
     return raw[len(prefix) :].strip().lower()
 
 
+def _economy_keyboard() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for key in ECONOMY_SETTING_LABELS:
+        current_row.append(
+            InlineKeyboardButton(
+                text=ECONOMY_SETTING_LABELS[key],
+                callback_data=f"admin:economy:item:{key}",
+            )
+        )
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    rows.append([InlineKeyboardButton(text="Admin panel", callback_data="admin:panel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _economy_item_keyboard(key: str) -> InlineKeyboardMarkup:
+    deltas = ECONOMY_SETTING_DELTAS.get(key, (-1, 1))
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{delta:+d}",
+                callback_data=f"admin:economy:adj:{key}:{delta}",
+            )
+            for delta in deltas
+        ],
+        [
+            InlineKeyboardButton(
+                text="Defaultga qaytarish",
+                callback_data=f"admin:economy:reset:{key}",
+            )
+        ],
+        [InlineKeyboardButton(text="Referral & reset", callback_data="admin:economy")],
+        [InlineKeyboardButton(text="Admin panel", callback_data="admin:panel")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _fmt_service_name(key: str) -> str:
     mapping = {
         "ai": "Sun'iy Intellekt",
@@ -308,6 +372,47 @@ def _token_service_text(tariff: ServiceTariff) -> str:
         f"Kategoriya: <b>{html.escape(category)}</b>\n\n"
         f"Free: <b>{tariff.free_cost}</b> token\n"
         f"Premium: <b>{tariff.premium_cost}</b> token\n\n"
+        "Pastdagi tugmalar bilan qiymatni o'zgartiring."
+    )
+
+
+def _economy_overview_text() -> str:
+    settings = economy_settings()
+    rows = [
+        "<b>Referral & reset sozlamalari</b>",
+        "Referral bonuslari va free refill parametrlarini shu yerdan boshqaring.",
+        "",
+    ]
+    for key, label in ECONOMY_SETTING_LABELS.items():
+        value = int(settings.get(key, 0) or 0)
+        suffix = " soat" if key == "free_reset_hours" else " token"
+        if key.startswith("referral_"):
+            suffix = " token"
+        rows.append(f"- <b>{html.escape(label)}</b>: <b>{value}</b>{suffix}")
+    rows.append("")
+    rows.append("Tahrirlash uchun parametrni tanlang.")
+    return "\n".join(rows)
+
+
+def _economy_item_text(key: str) -> str:
+    settings = economy_settings()
+    label = ECONOMY_SETTING_LABELS.get(key, key.replace("_", " ").title())
+    value = int(settings.get(key, 0) or 0)
+    suffix = " soat" if key == "free_reset_hours" else " token"
+    if key.startswith("referral_"):
+        suffix = " token"
+    details = {
+        "referral_inviter_bonus": "Do'st taklif qilgan userga beriladi.",
+        "referral_invitee_bonus": "Botga link orqali kirgan yangi userga beriladi.",
+        "free_reset_tokens": "Free user balansini har intervalda shu qiymatgacha tiklaydi.",
+        "free_reset_hours": "Free user refill intervali.",
+    }
+    return (
+        "<b>Referral & reset tahriri</b>\n"
+        f"Parametr: <b>{html.escape(label)}</b>\n"
+        f"Key: <code>{html.escape(key)}</code>\n"
+        f"Joriy qiymat: <b>{value}</b>{suffix}\n\n"
+        f"{html.escape(details.get(key, ''))}\n\n"
         "Pastdagi tugmalar bilan qiymatni o'zgartiring."
     )
 
@@ -507,6 +612,66 @@ async def admin_tokens_reset(callback: CallbackQuery) -> None:
         _token_service_text(updated),
         _token_adjust_keyboard(updated),
     )
+
+
+@router.callback_query(F.data == "admin:economy")
+async def admin_economy_panel(callback: CallbackQuery) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    await callback.answer()
+    await _safe_edit(callback, _economy_overview_text(), _economy_keyboard())
+
+
+@router.callback_query(F.data.startswith("admin:economy:item:"))
+async def admin_economy_item(callback: CallbackQuery) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    key = str(callback.data or "").rsplit(":", 1)[-1].strip().lower()
+    if key not in ECONOMY_SETTING_LABELS:
+        await callback.answer("Parametr topilmadi", show_alert=True)
+        return
+    await callback.answer()
+    await _safe_edit(callback, _economy_item_text(key), _economy_item_keyboard(key))
+
+
+@router.callback_query(F.data.startswith("admin:economy:adj:"))
+async def admin_economy_adjust(callback: CallbackQuery) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    parts = str(callback.data or "").split(":")
+    if len(parts) != 5:
+        await callback.answer("Format noto'g'ri", show_alert=True)
+        return
+    key = parts[3].strip().lower()
+    if key not in ECONOMY_SETTING_LABELS:
+        await callback.answer("Parametr topilmadi", show_alert=True)
+        return
+    try:
+        delta = int(parts[4])
+    except ValueError:
+        await callback.answer("Qiymat noto'g'ri", show_alert=True)
+        return
+    current = int(economy_settings().get(key, 0) or 0)
+    set_economy_setting(key, current + delta)
+    await callback.answer("Sozlama yangilandi")
+    await _safe_edit(callback, _economy_item_text(key), _economy_item_keyboard(key))
+
+
+@router.callback_query(F.data.startswith("admin:economy:reset:"))
+async def admin_economy_reset(callback: CallbackQuery) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    key = str(callback.data or "").rsplit(":", 1)[-1].strip().lower()
+    if key not in ECONOMY_SETTING_LABELS:
+        await callback.answer("Parametr topilmadi", show_alert=True)
+        return
+    reset_economy_setting(key)
+    await callback.answer("Default qiymat qaytarildi")
+    await _safe_edit(callback, _economy_item_text(key), _economy_item_keyboard(key))
 
 
 @router.message(Command("admin"))

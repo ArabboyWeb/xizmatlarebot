@@ -29,9 +29,16 @@ from handlers.wikipedia import router as wikipedia_router
 from handlers.youtube_search import router as youtube_search_router
 from services.ai_store import AIContextMiddleware, AIStore
 from services.analytics_store import AnalyticsMiddleware, AnalyticsStore
-from services.token_pricing import referral_invitee_bonus, referral_inviter_bonus
+from services.token_pricing import (
+    free_reset_hours,
+    free_reset_tokens,
+    referral_invitee_bonus,
+    referral_inviter_bonus,
+)
 from ui.main_menu import (
     main_menu_text,
+    referral_keyboard,
+    referral_menu_text,
     safe_edit_menu,
     section_menu_text,
     services_keyboard,
@@ -98,6 +105,10 @@ def register_core_handlers(
                 "referral_count": 0,
                 "referral_link": "",
                 "referrer_id": 0,
+                "free_reset_date": "",
+                "reset_date": "",
+                "free_reset_tokens": free_reset_tokens(),
+                "free_reset_hours": free_reset_hours(),
                 "lifetime_tokens_earned": 0,
                 "lifetime_tokens_spent": 0,
                 "referral_inviter_bonus": referral_inviter_bonus(),
@@ -124,6 +135,10 @@ def register_core_handlers(
             "referral_count": int(profile.get("referral_count", 0) or 0),
             "referral_link": _referral_link(user_id),
             "referrer_id": int(profile.get("referrer_id", 0) or 0),
+            "free_reset_date": str(profile.get("free_reset_date", "") or ""),
+            "reset_date": str(profile.get("reset_date", "") or ""),
+            "free_reset_tokens": free_reset_tokens(),
+            "free_reset_hours": free_reset_hours(),
             "lifetime_tokens_earned": int(profile.get("lifetime_tokens_earned", 0) or 0),
             "lifetime_tokens_spent": int(profile.get("lifetime_tokens_spent", 0) or 0),
             "referral_inviter_bonus": referral_inviter_bonus(),
@@ -147,7 +162,10 @@ def register_core_handlers(
                 **profile,
             ),
             parse_mode="HTML",
-            reply_markup=services_keyboard(is_admin=is_admin),
+            reply_markup=services_keyboard(
+                is_admin=is_admin,
+                referral_link=str(profile.get("referral_link", "") or ""),
+            ),
         )
 
     async def _edit_main_menu(
@@ -165,7 +183,10 @@ def register_core_handlers(
                 is_admin=is_admin,
                 **profile,
             ),
-            services_keyboard(is_admin=is_admin),
+            services_keyboard(
+                is_admin=is_admin,
+                referral_link=str(profile.get("referral_link", "") or ""),
+            ),
         )
 
     async def _edit_section_menu(
@@ -179,7 +200,23 @@ def register_core_handlers(
         await safe_edit_menu(
             callback,
             section_menu_text(section, **profile),
-            services_keyboard(is_admin=is_admin, section=section),
+            services_keyboard(
+                is_admin=is_admin,
+                section=section,
+                referral_link=str(profile.get("referral_link", "") or ""),
+            ),
+        )
+
+    async def _edit_referral_menu(
+        callback: CallbackQuery,
+        *,
+        ai_store: AIStore,
+    ) -> None:
+        profile = await _menu_profile(ai_store, callback.from_user)
+        await safe_edit_menu(
+            callback,
+            referral_menu_text(**profile),
+            referral_keyboard(str(profile.get("referral_link", "") or "")),
         )
 
     @dispatcher.message(CommandStart())
@@ -276,6 +313,16 @@ def register_core_handlers(
         await state.clear()
         await callback.answer()
         await _edit_section_menu(callback, section=section, ai_store=ai_store)
+
+    @dispatcher.callback_query(F.data == "cabinet:referral")
+    async def cabinet_referral_callback_handler(
+        callback: CallbackQuery,
+        state: FSMContext,
+        ai_store: AIStore,
+    ) -> None:
+        await state.clear()
+        await callback.answer()
+        await _edit_referral_menu(callback, ai_store=ai_store)
 
 
 async def run_polling_forever(
