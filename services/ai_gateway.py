@@ -445,7 +445,7 @@ async def _openrouter_completion(messages: list[dict[str, str]], model: str, rou
 
 
 async def _openai_completion(prompt_text: str, model: str, route: str) -> AIResult:
-    api_key = _env("AI_PRO_OPENAI_API_KEY")
+    api_key = _env("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("401: Official provider kaliti topilmadi")
     started = time.perf_counter()
@@ -470,7 +470,7 @@ async def _openai_completion(prompt_text: str, model: str, route: str) -> AIResu
 
 
 async def _google_completion(prompt_text: str, model: str, route: str) -> AIResult:
-    api_key = _env("AI_PRO_GOOGLE_API_KEY")
+    api_key = _env("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError("401: Official provider kaliti topilmadi")
     started = time.perf_counter()

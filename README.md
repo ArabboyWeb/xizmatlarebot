@@ -17,7 +17,7 @@ Telegram bot faqat **free API** servislar bilan ishlaydi.
 - `YouTube` - qidiruv, link bo'yicha yuklash, video sifati tanlash va audio saqlash. Instagram/TikTok direct video linklari ham shu bo'limda yuklanadi.
 - `Wikipedia` - maqola summary qidirish.
 - `Rasm yaratish` - prompt asosida rasm yaratadi.
-- `Sun'iy Intellekt` - Free / Premium / Pro planli AI chat, kredit dashboard, smart routing, plan/model selector va yashirin Telegram kanal arxivi.
+- `Sun'iy Intellekt` - Free / Premium planli AI chat, token dashboard, smart routing, plan/model selector va yashirin Telegram kanal arxivi.
 - `Ob-havo`, `Valyuta`, `Konvertor` - oldingi servislar saqlangan.
 - `Admin panel` - detal statistikalar va broadcast/reklama yuborish.
 - `Neon/Postgres` - `DATABASE_URL` bo'lsa analytics va admin statistikalar bazada saqlanadi.
@@ -42,8 +42,12 @@ pip install -r requirements.txt
    - `RAPIDAPI_KEY`
 5. AI uchun:
    - `OPENROUTER_API_KEY`
-   - `AI_PRO_PROVIDER`
-   - `AI_PRO_OPENAI_API_KEY` yoki `AI_PRO_GOOGLE_API_KEY`
+   - `BOT_FREE_DAILY_TOKENS`
+   - `BOT_PREMIUM_MONTHLY_TOKENS`
+   - `BOT_AI_FREE_MIN_COST`
+   - `BOT_AI_PREMIUM_MIN_COST`
+   - `BOT_REFERRAL_INVITER_BONUS`
+   - `BOT_REFERRAL_INVITEE_BONUS`
    - `AI_LOG_CHANNEL_ID` yoki botni kanalga admin qilib qo'shing
    - `AI_LOG_CHANNEL_LINK`
 6. Admin panel uchun:
@@ -58,6 +62,8 @@ pip install -r requirements.txt
 - YouTube downloader uchun `yt-dlp` ishlatiladi.
 - `Saqlash` oddiy veb-sahifa emas, to'g'ridan-to'g'ri fayl linklari uchun mo'ljallangan.
 - AI free plan 5 soniyalik cooldown va kunlik limit bilan ishlaydi.
+- AI, media, converter va qidiruv servislarida token sarfi xizmat og'irligiga qarab olinadi.
+- Referral link orqali token bonus tizimi yoqilgan.
 - AI chat matnlari bazaga yozilmaydi; ular Telegram arxiv kanaliga yuboriladi.
 - AI arxiv kanali foydalanuvchiga ko'rsatilmaydi.
 - AI ichida user-level `plan` va `model` selector bor.
@@ -65,7 +71,7 @@ pip install -r requirements.txt
 - AI plan boshqaruvi uchun admin buyruqlari bor:
   - `/ai`
   - `/ai_diag`
-  - `/ai_set_plan <user_id> <free|premium|pro> [credits]`
+  - `/ai_set_plan <user_id> <free|premium> [credits]`
   - `/ai_set_credits <user_id> <credits>`
 
 ## Ishga tushirish

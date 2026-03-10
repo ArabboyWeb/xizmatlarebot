@@ -598,8 +598,24 @@ async def ai_prompt_handler(
         )
         return
 
-    history = await ai_store.get_conversation(user_id=user_id)
     selected_model_alias = str(user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO)
+    projected_cost = projected_credits(
+        user_text=text,
+        current_plan=str(user.get("current_plan", "free") or "free"),
+        effective_plan=effective_plan,
+        selected_model_alias=selected_model_alias,
+    )
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "ai_chat",
+        custom_cost=projected_cost,
+        reply_markup=ai_dashboard_keyboard(),
+    )
+    if charge is None:
+        return
+
+    history = await ai_store.get_conversation(user_id=user_id)
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             decision, result = await generate_ai_reply(
