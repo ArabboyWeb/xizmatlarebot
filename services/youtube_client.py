@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +125,52 @@ def _audio_format_selector(*, ffmpeg_location: str) -> str:
     return "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio"
 
 
+def _is_streamable_video_suffix(suffix: str) -> bool:
+    return suffix.lower() in {".mp4", ".m4v", ".mov"}
+
+
+def _convert_video_to_mp4(path: Path, *, ffmpeg_location: str) -> Path:
+    if not ffmpeg_location or not path.exists():
+        return path
+    if _is_streamable_video_suffix(path.suffix):
+        return path
+    target = path.with_suffix(".mp4")
+    if target.exists():
+        target.unlink(missing_ok=True)
+    command = [
+        ffmpeg_location,
+        "-y",
+        "-i",
+        str(path),
+        "-movflags",
+        "+faststart",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        str(target),
+    ]
+    process = subprocess.run(
+        command,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if process.returncode != 0 or not target.exists() or target.stat().st_size <= 0:
+        target.unlink(missing_ok=True)
+        return path
+    path.unlink(missing_ok=True)
+    return target
+
+
 def _downloaded_files(target_dir: Path) -> list[Path]:
     ignored_suffixes = {".part", ".ytdl", ".json", ".jpg", ".jpeg", ".png", ".webp"}
     return [
@@ -167,6 +214,9 @@ def _download_youtube_sync(
             download_options["ffmpeg_location"] = ffmpeg_location
         if mode == "video" and ffmpeg_location:
             download_options["merge_output_format"] = "mp4"
+            download_options["postprocessors"] = [
+                {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
+            ]
         if mode == "audio" and ffmpeg_location:
             download_options["postprocessors"] = [
                 {
@@ -190,6 +240,8 @@ def _download_youtube_sync(
             raise RuntimeError("YouTube fayli yuklanmadi.")
 
         output = max(files, key=lambda item: item.stat().st_mtime)
+        if mode == "video":
+            output = _convert_video_to_mp4(output, ffmpeg_location=ffmpeg_location)
         size = output.stat().st_size
         if size > max_bytes:
             raise RuntimeError("Fayl limitdan katta.")
@@ -204,6 +256,8 @@ def _download_youtube_sync(
         content_type = (
             mimetypes.guess_type(final_output.name)[0] or "application/octet-stream"
         )
+        if mode == "video" and not str(content_type).startswith("video/"):
+            content_type = "video/mp4"
         if mode == "audio" and not content_type.startswith("audio/"):
             suffix = final_output.suffix.lower()
             if suffix == ".mp3":

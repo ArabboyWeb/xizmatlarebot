@@ -13,6 +13,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from services.analytics_store import AnalyticsStore
+from services.token_pricing import (
+    ServiceTariff,
+    list_tariffs,
+    reset_service_tariff,
+    service_tariff,
+    set_service_tariff_cost,
+    tariff_categories,
+)
 
 router = Router(name="admin")
 DEFAULT_ADMIN_IDS = {1392745444}
@@ -20,6 +28,15 @@ DEFAULT_ADMIN_IDS = {1392745444}
 
 class AdminState(StatesGroup):
     waiting_broadcast_message = State()
+
+
+TOKEN_CATEGORY_LABELS = {
+    "ai": "AI",
+    "lookup": "Lookup",
+    "media": "Media",
+    "productivity": "Productivity",
+    "utility": "Utility",
+}
 
 
 def admin_ids() -> set[int]:
@@ -49,6 +66,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Statistika", callback_data="admin:stats"),
                 InlineKeyboardButton(text="Foydalanuvchilar", callback_data="admin:users"),
             ],
+            [InlineKeyboardButton(text="Token tariflar", callback_data="admin:tokens")],
             [InlineKeyboardButton(text="Reklama yuborish", callback_data="admin:broadcast")],
             [InlineKeyboardButton(text="Yangilash", callback_data="admin:panel")],
         ]
@@ -70,6 +88,109 @@ def admin_confirm_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Bekor qilish", callback_data="admin:broadcast:cancel")],
         ]
     )
+
+
+def _token_categories_keyboard() -> InlineKeyboardMarkup:
+    categories = tariff_categories()
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for category in categories:
+        label = TOKEN_CATEGORY_LABELS.get(category, category.title())
+        current_row.append(
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"admin:tokens:cat:{category}",
+            )
+        )
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    rows.append([InlineKeyboardButton(text="Orqaga", callback_data="admin:panel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _token_services_keyboard(category: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for tariff in list_tariffs(category=category):
+        current_row.append(
+            InlineKeyboardButton(
+                text=tariff.label,
+                callback_data=f"admin:tokens:svc:{tariff.key}:{category}",
+            )
+        )
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    rows.append(
+        [InlineKeyboardButton(text="Kategoriyalar", callback_data="admin:tokens")]
+    )
+    rows.append([InlineKeyboardButton(text="Orqaga", callback_data="admin:panel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _token_adjust_keyboard(tariff: ServiceTariff) -> InlineKeyboardMarkup:
+    key = tariff.key
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="Free -5",
+                callback_data=f"admin:tokens:adj:{key}:free:-5",
+            ),
+            InlineKeyboardButton(
+                text="Free -1",
+                callback_data=f"admin:tokens:adj:{key}:free:-1",
+            ),
+            InlineKeyboardButton(
+                text="Free +1",
+                callback_data=f"admin:tokens:adj:{key}:free:1",
+            ),
+            InlineKeyboardButton(
+                text="Free +5",
+                callback_data=f"admin:tokens:adj:{key}:free:5",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="Premium -5",
+                callback_data=f"admin:tokens:adj:{key}:premium:-5",
+            ),
+            InlineKeyboardButton(
+                text="Premium -1",
+                callback_data=f"admin:tokens:adj:{key}:premium:-1",
+            ),
+            InlineKeyboardButton(
+                text="Premium +1",
+                callback_data=f"admin:tokens:adj:{key}:premium:1",
+            ),
+            InlineKeyboardButton(
+                text="Premium +5",
+                callback_data=f"admin:tokens:adj:{key}:premium:5",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="Defaultga qaytarish",
+                callback_data=f"admin:tokens:reset:{key}",
+            )
+        ],
+    ]
+    category = str(tariff.category or "").strip().lower()
+    if category:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Kategoriyaga qaytish",
+                    callback_data=f"admin:tokens:cat:{category}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="Admin panel", callback_data="admin:panel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _fmt_service_name(key: str) -> str:
@@ -95,6 +216,52 @@ def _fmt_service_name(key: str) -> str:
         "download:tiktok_video": "TikTok video yuklash",
     }
     return mapping.get(key, key.replace("_", " ").title())
+
+
+def _token_overview_text() -> str:
+    rows = [
+        "<b>Token tariflar paneli</b>",
+        "Har bir servis uchun Free/Premium token sarfini shu yerdan o'zgartiring.",
+        "",
+    ]
+    for category in tariff_categories():
+        label = TOKEN_CATEGORY_LABELS.get(category, category.title())
+        services = list_tariffs(category=category)
+        rows.append(f"<b>{html.escape(label)}</b>: {len(services)} ta servis")
+    rows.append("")
+    rows.append("Kategoriyani tanlang.")
+    return "\n".join(rows)
+
+
+def _token_category_text(category: str) -> str:
+    normalized = str(category or "").strip().lower()
+    label = TOKEN_CATEGORY_LABELS.get(normalized, normalized.title() or "Kategoriya")
+    rows = [f"<b>{html.escape(label)} tariflari</b>", ""]
+    services = list_tariffs(category=normalized)
+    if not services:
+        rows.append("Servis topilmadi.")
+    else:
+        for tariff in services:
+            rows.append(
+                f"- <b>{html.escape(tariff.label)}</b> ({html.escape(tariff.key)}): "
+                f"Free <b>{tariff.free_cost}</b> / Premium <b>{tariff.premium_cost}</b>"
+            )
+    rows.append("")
+    rows.append("Tahrirlash uchun servis tugmasini bosing.")
+    return "\n".join(rows)
+
+
+def _token_service_text(tariff: ServiceTariff) -> str:
+    category = TOKEN_CATEGORY_LABELS.get(tariff.category, tariff.category.title())
+    return (
+        "<b>Token tarif tahriri</b>\n"
+        f"Servis: <b>{html.escape(tariff.label)}</b>\n"
+        f"Key: <code>{html.escape(tariff.key)}</code>\n"
+        f"Kategoriya: <b>{html.escape(category)}</b>\n\n"
+        f"Free: <b>{tariff.free_cost}</b> token\n"
+        f"Premium: <b>{tariff.premium_cost}</b> token\n\n"
+        "Pastdagi tugmalar bilan qiymatni o'zgartiring."
+    )
 
 
 def _dashboard_text(snapshot: dict[str, object]) -> str:
@@ -192,6 +359,110 @@ async def _show_panel(
 ) -> None:
     snapshot = await analytics_store.snapshot()
     await _safe_edit(callback, _dashboard_text(snapshot), admin_keyboard())
+
+
+@router.callback_query(F.data == "admin:tokens")
+async def admin_tokens_panel(callback: CallbackQuery) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    await callback.answer()
+    await _safe_edit(callback, _token_overview_text(), _token_categories_keyboard())
+
+
+@router.callback_query(F.data.startswith("admin:tokens:cat:"))
+async def admin_tokens_category(callback: CallbackQuery) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    category = str(callback.data or "").split(":")[-1].strip().lower()
+    if category not in set(tariff_categories()):
+        await callback.answer("Kategoriya topilmadi", show_alert=True)
+        return
+    await callback.answer()
+    await _safe_edit(
+        callback,
+        _token_category_text(category),
+        _token_services_keyboard(category),
+    )
+
+
+@router.callback_query(F.data.startswith("admin:tokens:svc:"))
+async def admin_tokens_service(callback: CallbackQuery) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    parts = str(callback.data or "").split(":")
+    if len(parts) != 5:
+        await callback.answer("Servis topilmadi", show_alert=True)
+        return
+    key = parts[3].strip().lower()
+    try:
+        tariff = service_tariff(key)
+    except KeyError:
+        await callback.answer("Servis topilmadi", show_alert=True)
+        return
+    await callback.answer()
+    await _safe_edit(
+        callback,
+        _token_service_text(tariff),
+        _token_adjust_keyboard(tariff),
+    )
+
+
+@router.callback_query(F.data.startswith("admin:tokens:adj:"))
+async def admin_tokens_adjust(callback: CallbackQuery) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    parts = str(callback.data or "").split(":")
+    if len(parts) != 6:
+        await callback.answer("Format noto'g'ri", show_alert=True)
+        return
+    key = parts[3].strip().lower()
+    plan = parts[4].strip().lower()
+    if plan not in {"free", "premium"}:
+        await callback.answer("Plan noto'g'ri", show_alert=True)
+        return
+    try:
+        delta = int(parts[5])
+    except ValueError:
+        await callback.answer("Delta noto'g'ri", show_alert=True)
+        return
+    current = service_tariff(key)
+    if plan == "free":
+        updated = set_service_tariff_cost(key, free_cost=current.free_cost + delta)
+    else:
+        updated = set_service_tariff_cost(key, premium_cost=current.premium_cost + delta)
+    await callback.answer("Tarif yangilandi")
+    await _safe_edit(
+        callback,
+        _token_service_text(updated),
+        _token_adjust_keyboard(updated),
+    )
+
+
+@router.callback_query(F.data.startswith("admin:tokens:reset:"))
+async def admin_tokens_reset(callback: CallbackQuery) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    parts = str(callback.data or "").split(":")
+    if len(parts) != 4:
+        await callback.answer("Format noto'g'ri", show_alert=True)
+        return
+    key = parts[3].strip().lower()
+    try:
+        updated = reset_service_tariff(key)
+    except KeyError:
+        await callback.answer("Servis topilmadi", show_alert=True)
+        return
+    await callback.answer("Default tarif qaytarildi")
+    await _safe_edit(
+        callback,
+        _token_service_text(updated),
+        _token_adjust_keyboard(updated),
+    )
 
 
 @router.message(Command("admin"))

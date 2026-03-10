@@ -29,6 +29,7 @@ from handlers.wikipedia import router as wikipedia_router
 from handlers.youtube_search import router as youtube_search_router
 from services.ai_store import AIContextMiddleware, AIStore
 from services.analytics_store import AnalyticsMiddleware, AnalyticsStore
+from services.token_pricing import referral_invitee_bonus, referral_inviter_bonus
 from ui.main_menu import (
     main_menu_text,
     safe_edit_menu,
@@ -96,6 +97,11 @@ def register_core_handlers(
                 "token_balance": 0,
                 "referral_count": 0,
                 "referral_link": "",
+                "referrer_id": 0,
+                "lifetime_tokens_earned": 0,
+                "lifetime_tokens_spent": 0,
+                "referral_inviter_bonus": referral_inviter_bonus(),
+                "referral_invitee_bonus": referral_invitee_bonus(),
             }
 
         user_id = int(getattr(user, "id", 0) or 0)
@@ -117,6 +123,11 @@ def register_core_handlers(
             "token_balance": int(profile.get("token_balance", 0) or 0),
             "referral_count": int(profile.get("referral_count", 0) or 0),
             "referral_link": _referral_link(user_id),
+            "referrer_id": int(profile.get("referrer_id", 0) or 0),
+            "lifetime_tokens_earned": int(profile.get("lifetime_tokens_earned", 0) or 0),
+            "lifetime_tokens_spent": int(profile.get("lifetime_tokens_spent", 0) or 0),
+            "referral_inviter_bonus": referral_inviter_bonus(),
+            "referral_invitee_bonus": referral_invitee_bonus(),
         }
 
     async def _answer_main_menu(

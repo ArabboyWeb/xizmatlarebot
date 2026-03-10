@@ -3,7 +3,7 @@
 Telegram bot faqat **free API** servislar bilan ishlaydi.
 
 ## Yangi servislar
-- `Saqlash` - direct fayl, YouTube, Instagram va TikTok linklarini yuklab, faylni chatga qaytaradi.
+- `Saqlash` - direct fayl linklarini yuklab, faylni chatga qaytaradi.
 - `1secmail` - temporary email yaratish, inbox ko'rish, message ID bilan xabar o'qish.
   - Agar 1secmail bloklansa, bot avtomatik `mail.tm` ga fallback qiladi.
 - `TinyURL` - uzun URL ni qisqartirish (`TINYURL_API_TOKEN` bo'lsa official API, bo'lmasa legacy free endpoint).
@@ -14,12 +14,12 @@ Telegram bot faqat **free API** servislar bilan ishlaydi.
   - `en`
   - `ru`
   - `zh`
-- `YouTube` - qidiruv, link bo'yicha yuklash, video sifati tanlash va audio saqlash. Instagram/TikTok direct video linklari ham shu bo'limda yuklanadi.
+- `YouTube` - qidiruv, link bo'yicha yuklash, video sifati tanlash va audio saqlash. Instagram/TikTok direct video linklari shu oqimga integratsiya qilingan.
 - `Wikipedia` - maqola summary qidirish.
 - `Rasm yaratish` - prompt asosida rasm yaratadi.
 - `Sun'iy Intellekt` - Free / Premium planli AI chat, token dashboard, smart routing, plan/model selector va yashirin Telegram kanal arxivi.
 - `Ob-havo`, `Valyuta`, `Konvertor` - oldingi servislar saqlangan.
-- `Admin panel` - detal statistikalar va broadcast/reklama yuborish.
+- `Admin panel` - detal statistikalar, broadcast/reklama yuborish va servislar bo'yicha token tariflarini boshqarish.
 - `Neon/Postgres` - `DATABASE_URL` bo'lsa analytics va admin statistikalar bazada saqlanadi.
 
 ## Telegram free cloud limitlari

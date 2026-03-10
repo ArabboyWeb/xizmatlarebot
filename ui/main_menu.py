@@ -22,25 +22,25 @@ def _format_balance(balance: int) -> str:
 
 def _main_rows(is_admin: bool) -> list[list[InlineKeyboardButton]]:
     rows = [
+        [InlineKeyboardButton(text="💎 Sun'iy Intellekt", callback_data="menu:section:ai")],
         [
             InlineKeyboardButton(
-                text="💎 Sun'iy Intellekt", callback_data="menu:section:ai"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="📥 Media & Yuklab olish", callback_data="menu:section:media"
+                text="📥 Media & Yuklab olish",
+                callback_data="menu:section:media",
             ),
             InlineKeyboardButton(
-                text="🛠 Foydali Asboblar", callback_data="menu:section:tools"
+                text="🛠 Foydali Asboblar",
+                callback_data="menu:section:tools",
             ),
         ],
         [
             InlineKeyboardButton(
-                text="🔍 Ma'lumot qidirish", callback_data="menu:section:search"
+                text="🔍 Ma'lumot qidirish",
+                callback_data="menu:section:search",
             ),
             InlineKeyboardButton(
-                text="👤 Kabinet / Balans", callback_data="menu:section:cabinet"
+                text="👤 Kabinet / Balans",
+                callback_data="menu:section:cabinet",
             ),
         ],
     ]
@@ -55,15 +55,18 @@ def _section_rows(section: MenuSection) -> list[list[InlineKeyboardButton]]:
             [
                 InlineKeyboardButton(text="💬 AI Chat", callback_data="services:ai"),
                 InlineKeyboardButton(
-                    text="🎨 Rasm Yaratish", callback_data="services:pollinations"
+                    text="🎨 Rasm Yaratish",
+                    callback_data="services:pollinations",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text="📄 PDF/Doc Konvertor", callback_data="services:converter"
+                    text="📄 PDF/Doc Konvertor",
+                    callback_data="services:converter",
                 ),
                 InlineKeyboardButton(
-                    text="💳 Premiumga o'tish", callback_data="ai:plans"
+                    text="💳 Premiumga o'tish",
+                    callback_data="ai:plans",
                 ),
             ],
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="menu:main")],
@@ -72,19 +75,23 @@ def _section_rows(section: MenuSection) -> list[list[InlineKeyboardButton]]:
         return [
             [
                 InlineKeyboardButton(
-                    text="🎥 YouTube Video/Audio", callback_data="services:youtube"
+                    text="🎥 YouTube Video/Audio",
+                    callback_data="services:youtube",
                 ),
                 InlineKeyboardButton(
-                    text="🎵 Musiqa qidirish", callback_data="services:shazam"
+                    text="🖼 Instagram/TikTok Saver",
+                    callback_data="services:youtube",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text="💾 Fayllarni saqlash", callback_data="services:save"
+                    text="💾 Fayllarni saqlash",
+                    callback_data="services:save",
                 ),
                 InlineKeyboardButton(
-                    text="🖼 Instagram/TikTok Saver", callback_data="services:save"
-                )
+                    text="🎵 Musiqa qidirish",
+                    callback_data="services:shazam",
+                ),
             ],
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="menu:main")],
         ]
@@ -92,23 +99,28 @@ def _section_rows(section: MenuSection) -> list[list[InlineKeyboardButton]]:
         return [
             [
                 InlineKeyboardButton(
-                    text="💱 Valyuta kursi", callback_data="services:currency"
+                    text="💱 Valyuta kursi",
+                    callback_data="services:currency",
                 ),
                 InlineKeyboardButton(
-                    text="☁️ Ob-havo", callback_data="services:weather"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🌐 Tarjimon", callback_data="services:translate"
-                ),
-                InlineKeyboardButton(
-                    text="🔗 Link qisqartirish", callback_data="services:tinyurl"
+                    text="☁️ Ob-havo",
+                    callback_data="services:weather",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text="📄 Konvertor", callback_data="services:converter"
+                    text="🌐 Tarjimon",
+                    callback_data="services:translate",
+                ),
+                InlineKeyboardButton(
+                    text="🔗 Link qisqartirish",
+                    callback_data="services:tinyurl",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📄 Konvertor",
+                    callback_data="services:converter",
                 )
             ],
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="menu:main")],
@@ -117,10 +129,12 @@ def _section_rows(section: MenuSection) -> list[list[InlineKeyboardButton]]:
         return [
             [
                 InlineKeyboardButton(
-                    text="💼 Ish qidirish", callback_data="services:jobs"
+                    text="💼 Ish qidirish",
+                    callback_data="services:jobs",
                 ),
                 InlineKeyboardButton(
-                    text="📖 Wikipedia", callback_data="services:wikipedia"
+                    text="📖 Wikipedia",
+                    callback_data="services:wikipedia",
                 ),
             ],
             [
@@ -135,13 +149,15 @@ def _section_rows(section: MenuSection) -> list[list[InlineKeyboardButton]]:
         return [
             [
                 InlineKeyboardButton(
-                    text="💳 Balans tafsiloti", callback_data="services:ai"
+                    text="💳 Balans tafsiloti",
+                    callback_data="services:ai",
                 )
             ],
             [
                 InlineKeyboardButton(text="💬 AI Chat", callback_data="services:ai"),
                 InlineKeyboardButton(
-                    text="⭐ Premium tariflar", callback_data="ai:plans"
+                    text="⭐ Premium tariflar",
+                    callback_data="ai:plans",
                 ),
             ],
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="menu:main")],
@@ -166,6 +182,11 @@ def main_menu_text(
     token_balance: int = 0,
     referral_count: int = 0,
     referral_link: str = "",
+    referrer_id: int = 0,
+    lifetime_tokens_earned: int = 0,
+    lifetime_tokens_spent: int = 0,
+    referral_inviter_bonus: int = 0,
+    referral_invitee_bonus: int = 0,
     notice: str = "",
     is_admin: bool = False,
 ) -> str:
@@ -181,6 +202,19 @@ def main_menu_text(
     )
     if notice:
         text += f"\n\n{notice}"
+    if referrer_id > 0:
+        text += f"\n\n👥 Sizni taklif qilgan ID: <code>{int(referrer_id)}</code>"
+    if lifetime_tokens_earned > 0 or lifetime_tokens_spent > 0:
+        text += (
+            f"\n📈 Umumiy olingan token: <b>{_format_balance(lifetime_tokens_earned)}</b>"
+            f"\n📉 Umumiy sarflangan token: <b>{_format_balance(lifetime_tokens_spent)}</b>"
+        )
+    if referral_inviter_bonus > 0 or referral_invitee_bonus > 0:
+        text += (
+            "\n\n🎁 Referal bonuslari:"
+            f"\n- Do'stingizga: <b>{int(referral_invitee_bonus)}</b> token"
+            f"\n- Sizga: <b>{int(referral_inviter_bonus)}</b> token"
+        )
     if referral_link:
         text += f"\n\n🔗 Referal linkingiz: <code>{referral_link}</code>"
     return text
@@ -193,6 +227,11 @@ def section_menu_text(
     token_balance: int = 0,
     referral_count: int = 0,
     referral_link: str = "",
+    referrer_id: int = 0,
+    lifetime_tokens_earned: int = 0,
+    lifetime_tokens_spent: int = 0,
+    referral_inviter_bonus: int = 0,
+    referral_invitee_bonus: int = 0,
 ) -> str:
     if section == "ai":
         return (
@@ -207,10 +246,9 @@ def section_menu_text(
         return (
             "<b>📥 Media & Yuklab olish</b>\n"
             "Media va yuklab olish xizmatlari shu yerda.\n\n"
-            "🎥 YouTube video/audio\n"
-            "🎵 Musiqa qidirish\n"
+            "🎥 YouTube/Instagram/TikTok bitta oqimda\n"
             "💾 Fayllarni saqlash\n"
-            "🖼 Instagram/TikTok saver"
+            "🎵 Musiqa qidirish"
         )
     if section == "tools":
         return (
@@ -236,9 +274,19 @@ def section_menu_text(
             "Hisobingiz bo'yicha qisqa ma'lumot.\n\n"
             f"👤 Holat: <b>{_plan_label(user_plan)}</b>\n"
             f"💎 Balans: <b>{_format_balance(token_balance)} token</b>\n"
-            f"👫 Referal: <b>{max(0, int(referral_count))} ta</b>\n\n"
+            f"👫 Referal: <b>{max(0, int(referral_count))} ta</b>\n"
+            f"📈 Olingan: <b>{_format_balance(lifetime_tokens_earned)} token</b>\n"
+            f"📉 Sarflangan: <b>{_format_balance(lifetime_tokens_spent)} token</b>\n\n"
             "Balans tafsiloti va Premium tariflar uchun tugmalardan foydalaning."
         )
+        if referrer_id > 0:
+            text += f"\n\n👥 Sizni taklif qilgan ID: <code>{int(referrer_id)}</code>"
+        if referral_inviter_bonus > 0 or referral_invitee_bonus > 0:
+            text += (
+                "\n\n🎁 Referal bonuslari:"
+                f"\n- Do'stingizga: <b>{int(referral_invitee_bonus)}</b> token"
+                f"\n- Sizga: <b>{int(referral_inviter_bonus)}</b> token"
+            )
         if referral_link:
             text += f"\n\n🔗 Referal link: <code>{referral_link}</code>"
         return text
@@ -246,13 +294,17 @@ def section_menu_text(
 
 
 async def safe_edit_menu(
-    callback: CallbackQuery, text: str, reply_markup: InlineKeyboardMarkup
+    callback: CallbackQuery,
+    text: str,
+    reply_markup: InlineKeyboardMarkup,
 ) -> None:
     if callback.message is None:
         return
     try:
         await callback.message.edit_text(
-            text, parse_mode="HTML", reply_markup=reply_markup
+            text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
         )
     except TelegramBadRequest as error:
         if "message is not modified" not in (error.message or "").lower():

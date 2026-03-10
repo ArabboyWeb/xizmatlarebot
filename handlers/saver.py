@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import html
 import logging
+import mimetypes
+import subprocess
+from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -36,8 +40,10 @@ from services.saver_client import (
 from services.token_billing import ensure_balance
 from services.youtube_client import download_youtube
 
-SAVE_YOUTUBE_VIDEO_QUALITIES = {"360", "720"}
-SAVE_YOUTUBE_AUDIO_BITRATES = {"128"}
+try:
+    import imageio_ffmpeg
+except Exception:  # pragma: no cover
+    imageio_ffmpeg = None
 
 router = Router(name="saver")
 logger = logging.getLogger(__name__)
@@ -45,6 +51,9 @@ logger = logging.getLogger(__name__)
 
 class SaverState(StatesGroup):
     waiting_url = State()
+
+
+TELEGRAM_STREAMABLE_VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov"}
 
 
 def _format_bytes(size: int) -> str:
@@ -61,14 +70,13 @@ def save_prompt_text() -> str:
     limit_text = _format_bytes(saver_limit_bytes())
     return (
         "<b>Saqlash</b>\n"
-        "Direct fayl linki, YouTube, Instagram yoki TikTok link yuboring. "
+        "Direct fayl linkini yuboring. "
         "Bot uni yuklab, shu chatga qaytaradi.\n\n"
         f"Maksimal hajm: <b>{limit_text}</b>\n"
         "Misol:\n"
-        "<code>https://example.com/file.pdf</code>\n"
-        "<code>https://youtu.be/dQw4w9WgXcQ</code>\n"
-        "<code>https://www.instagram.com/reel/...</code>\n"
-        "<code>https://www.tiktok.com/@user/video/...</code>"
+        "<code>https://example.com/file.pdf</code>\n\n"
+        "YouTube/Instagram/TikTok uchun Media bo'limidagi "
+        "<b>YouTube Video/Audio</b> oqimidan foydalaning."
     )
 
 
@@ -84,6 +92,20 @@ def save_result_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Yana saqlash", callback_data="save:repeat")],
+            [InlineKeyboardButton(text="Orqaga", callback_data="services:back")],
+        ]
+    )
+
+
+def save_video_redirect_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🎥 Video Saverga o'tish",
+                    callback_data="services:youtube",
+                )
+            ],
             [InlineKeyboardButton(text="Orqaga", callback_data="services:back")],
         ]
     )
@@ -120,6 +142,93 @@ async def _safe_edit(
             logger.warning("Saver edit xatosi: %s", error)
 
 
+def _ffmpeg_path() -> str:
+    if imageio_ffmpeg is None:
+        return ""
+    try:
+        value = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # pragma: no cover
+        return ""
+    return value if value and Path(value).exists() else ""
+
+
+def _should_convert_video_for_telegram(downloaded: DownloadedFile) -> bool:
+    suffix = downloaded.path.suffix.lower()
+    content_type = str(downloaded.content_type or "").strip().lower()
+    if suffix in TELEGRAM_STREAMABLE_VIDEO_EXTENSIONS and content_type.startswith("video/"):
+        return False
+    return True
+
+
+def _convert_video_to_mp4_sync(
+    downloaded: DownloadedFile,
+    *,
+    ffmpeg_executable: str,
+) -> DownloadedFile:
+    source = downloaded.path
+    if not source.exists():
+        return downloaded
+    target = source.with_suffix(".mp4")
+    if target.exists():
+        with contextlib.suppress(OSError):
+            target.unlink()
+    command = [
+        ffmpeg_executable,
+        "-y",
+        "-i",
+        str(source),
+        "-movflags",
+        "+faststart",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        str(target),
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if result.returncode != 0 or not target.exists() or target.stat().st_size <= 0:
+        with contextlib.suppress(OSError):
+            target.unlink()
+        return downloaded
+
+    with contextlib.suppress(OSError):
+        source.unlink()
+    return DownloadedFile(
+        path=target,
+        file_name=target.name,
+        size=int(target.stat().st_size),
+        content_type="video/mp4",
+        source=downloaded.source,
+    )
+
+
+async def _prepare_video_for_send(downloaded: DownloadedFile) -> DownloadedFile:
+    if not _should_convert_video_for_telegram(downloaded):
+        return downloaded
+    ffmpeg_executable = _ffmpeg_path()
+    if not ffmpeg_executable:
+        return downloaded
+    converted = await asyncio.to_thread(
+        _convert_video_to_mp4_sync,
+        downloaded,
+        ffmpeg_executable=ffmpeg_executable,
+    )
+    return converted
+
+
 async def send_downloaded_file(
     message: Message,
     downloaded: DownloadedFile,
@@ -127,13 +236,16 @@ async def send_downloaded_file(
     title: str,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
+    def build_caption(item: DownloadedFile) -> str:
+        return (
+            "<b>Fayl tayyor</b>\n"
+            f"Nomi: <code>{html.escape(item.file_name)}</code>\n"
+            f"Hajmi: <b>{_format_bytes(item.size)}</b>\n"
+            f"Manba: <b>{html.escape(title)}</b>"
+        )
+
     file_input = FSInputFile(downloaded.path, filename=downloaded.file_name)
-    caption = (
-        "<b>Fayl tayyor</b>\n"
-        f"Nomi: <code>{html.escape(downloaded.file_name)}</code>\n"
-        f"Hajmi: <b>{_format_bytes(downloaded.size)}</b>\n"
-        f"Manba: <b>{html.escape(title)}</b>"
-    )
+    caption = build_caption(downloaded)
     send_kind = detect_send_kind(downloaded.file_name, downloaded.content_type)
 
     try:
@@ -146,10 +258,15 @@ async def send_downloaded_file(
             )
             return
         if send_kind == "video":
+            downloaded = await _prepare_video_for_send(downloaded)
+            send_kind = detect_send_kind(downloaded.file_name, downloaded.content_type)
+            file_input = FSInputFile(downloaded.path, filename=downloaded.file_name)
+            caption = build_caption(downloaded)
             await message.answer_video(
                 video=file_input,
                 caption=caption,
                 parse_mode="HTML",
+                supports_streaming=True,
                 reply_markup=reply_markup,
             )
             return
@@ -408,57 +525,22 @@ async def save_url_handler(
     if candidate_url and is_youtube_url(candidate_url):
         await message.answer(
             (
-                "<b>YouTube topildi</b>\n"
-                "Saver ichida yuklash uchun formatni tanlang."
+                "<b>YouTube/Instagram/TikTok videolar bitta oqimga o'tkazilgan.</b>\n"
+                "Iltimos, <b>YouTube Video/Audio</b> bo'limidan foydalaning."
             ),
             parse_mode="HTML",
-            reply_markup=save_youtube_keyboard(),
+            reply_markup=save_video_redirect_keyboard(),
         )
-        await state.update_data(save_youtube_url=candidate_url)
         return
     if candidate_url and is_social_video_url(candidate_url):
-        platform = social_platform_name(candidate_url)
-        charge = await ensure_balance(
-            ai_store,
-            message,
-            "save_social_video",
-            reply_markup=save_keyboard(),
+        await message.answer(
+            (
+                "<b>YouTube/Instagram/TikTok videolar bitta oqimga o'tkazilgan.</b>\n"
+                "Iltimos, <b>YouTube Video/Audio</b> bo'limidan foydalaning."
+            ),
+            parse_mode="HTML",
+            reply_markup=save_video_redirect_keyboard(),
         )
-        if charge is None:
-            return
-        _user, cost, user_id, username, full_name = charge
-        try:
-            downloaded = await download_and_send_social(
-                message,
-                candidate_url,
-                title=f"Saqlash / {platform}",
-                reply_markup=save_result_keyboard(),
-            )
-        except Exception:
-            return
-        await ai_store.charge_tokens(
-            user_id=user_id,
-            username=username,
-            full_name=full_name,
-            amount=cost,
-        )
-
-        if message.from_user is not None:
-            await analytics_store.record_download(
-                user_id=int(message.from_user.id),
-                username=str(message.from_user.username or "").strip(),
-                full_name=" ".join(
-                    part
-                    for part in [
-                        str(message.from_user.first_name or "").strip(),
-                        str(message.from_user.last_name or "").strip(),
-                    ]
-                    if part
-                ).strip(),
-                source=downloaded.source,
-                size=downloaded.size,
-            )
-        await state.set_state(SaverState.waiting_url)
         return
 
     charge = await ensure_balance(
@@ -514,74 +596,16 @@ async def save_youtube_callback(
     if callback.message is None:
         await callback.answer("Xabar topilmadi", show_alert=True)
         return
-
-    data = await state.get_data()
-    url = str(data.get("save_youtube_url", "")).strip()
-    if not url:
-        await callback.answer("YouTube link topilmadi", show_alert=True)
-        return
-
-    parts = (callback.data or "").split(":")
-    if len(parts) != 4:
-        await callback.answer("Format noto'g'ri", show_alert=True)
-        return
-
-    mode = parts[2].strip().lower()
-    value = parts[3].strip().lower()
-    if mode == "video" and value not in SAVE_YOUTUBE_VIDEO_QUALITIES:
-        await callback.answer("Video sifati noto'g'ri", show_alert=True)
-        return
-    if mode == "audio" and value not in SAVE_YOUTUBE_AUDIO_BITRATES:
-        await callback.answer("Audio formati noto'g'ri", show_alert=True)
-        return
-    if mode not in {"video", "audio"}:
-        await callback.answer("Format noto'g'ri", show_alert=True)
-        return
-
-    service_key = "save_youtube_video" if mode == "video" else "save_youtube_audio"
-    charge = await ensure_balance(
-        ai_store,
-        callback,
-        service_key,
-        reply_markup=save_youtube_keyboard(),
+    _ = analytics_store, ai_store
+    await callback.answer()
+    await callback.message.answer(
+        (
+            "<b>YouTube/Instagram/TikTok videolar bitta oqimga o'tkazilgan.</b>\n"
+            "Iltimos, <b>YouTube Video/Audio</b> bo'limidan foydalaning."
+        ),
+        parse_mode="HTML",
+        reply_markup=save_video_redirect_keyboard(),
     )
-    if charge is None:
-        return
-    _user, cost, user_id, username, full_name = charge
-    await callback.answer("Yuklanmoqda...")
-    try:
-        downloaded = await download_and_send_youtube(
-            callback.message,
-            url,
-            mode=mode,
-            quality=value if mode == "video" else "360",
-            audio_bitrate=value if mode == "audio" else "128",
-            reply_markup=save_result_keyboard(),
-        )
-    except Exception:
-        return
-    await ai_store.charge_tokens(
-        user_id=user_id,
-        username=username,
-        full_name=full_name,
-        amount=cost,
-    )
-
-    if callback.from_user is not None:
-        await analytics_store.record_download(
-            user_id=int(callback.from_user.id),
-            username=str(callback.from_user.username or "").strip(),
-            full_name=" ".join(
-                part
-                for part in [
-                    str(callback.from_user.first_name or "").strip(),
-                    str(callback.from_user.last_name or "").strip(),
-                ]
-                if part
-            ).strip(),
-            source=downloaded.source,
-            size=downloaded.size,
-        )
     await state.update_data(save_youtube_url="")
     await state.set_state(SaverState.waiting_url)
 

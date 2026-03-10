@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +24,78 @@ def _read_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+_TOKEN_OVERRIDES_PATH = (
+    Path(__file__).resolve().parent.parent / "data" / "token_tariffs.json"
+)
+_OVERRIDE_CACHE: dict[str, dict[str, int]] = {}
+_OVERRIDE_MTIME_NS = -1
+
+
+def _normalize_override_payload(raw: object) -> dict[str, dict[str, int]]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, dict[str, int]] = {}
+    for key, value in raw.items():
+        service_key = str(key or "").strip().lower()
+        if service_key not in SERVICE_TARIFFS:
+            continue
+        if not isinstance(value, dict):
+            continue
+        free_cost = value.get("free_cost")
+        premium_cost = value.get("premium_cost")
+        try:
+            free_value = max(1, int(free_cost))
+            premium_value = max(1, int(premium_cost))
+        except (TypeError, ValueError):
+            continue
+        normalized[service_key] = {
+            "free_cost": free_value,
+            "premium_cost": premium_value,
+        }
+    return normalized
+
+
+def _load_overrides() -> dict[str, dict[str, int]]:
+    global _OVERRIDE_CACHE, _OVERRIDE_MTIME_NS
+    if not _TOKEN_OVERRIDES_PATH.exists():
+        _OVERRIDE_CACHE = {}
+        _OVERRIDE_MTIME_NS = -1
+        return {}
+    try:
+        stat = _TOKEN_OVERRIDES_PATH.stat()
+        mtime_ns = int(stat.st_mtime_ns)
+    except OSError:
+        _OVERRIDE_CACHE = {}
+        _OVERRIDE_MTIME_NS = -1
+        return {}
+    if mtime_ns == _OVERRIDE_MTIME_NS:
+        return dict(_OVERRIDE_CACHE)
+    try:
+        payload = json.loads(_TOKEN_OVERRIDES_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    normalized = _normalize_override_payload(payload)
+    _OVERRIDE_CACHE = dict(normalized)
+    _OVERRIDE_MTIME_NS = mtime_ns
+    return normalized
+
+
+def _save_overrides(overrides: dict[str, dict[str, int]]) -> None:
+    global _OVERRIDE_CACHE, _OVERRIDE_MTIME_NS
+    _TOKEN_OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = _TOKEN_OVERRIDES_PATH.with_suffix(".tmp")
+    temp_path.write_text(
+        json.dumps(overrides, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp_path.replace(_TOKEN_OVERRIDES_PATH)
+    try:
+        _OVERRIDE_MTIME_NS = int(_TOKEN_OVERRIDES_PATH.stat().st_mtime_ns)
+    except OSError:
+        _OVERRIDE_MTIME_NS = -1
+    _OVERRIDE_CACHE = dict(overrides)
 
 
 def normalize_plan(plan: str) -> str:
@@ -268,7 +342,18 @@ def service_tariff(service_key: str) -> ServiceTariff:
     key = str(service_key or "").strip().lower()
     if key not in SERVICE_TARIFFS:
         raise KeyError(f"Tariff topilmadi: {service_key}")
-    return SERVICE_TARIFFS[key]
+    base = SERVICE_TARIFFS[key]
+    override = _load_overrides().get(key, {})
+    free_cost = int(override.get("free_cost", base.free_cost))
+    premium_cost = int(override.get("premium_cost", base.premium_cost))
+    return ServiceTariff(
+        key=base.key,
+        label=base.label,
+        category=base.category,
+        free_cost=max(1, free_cost),
+        premium_cost=max(1, premium_cost),
+        description=base.description,
+    )
 
 
 def service_cost(service_key: str, *, plan: str) -> int:
@@ -276,3 +361,63 @@ def service_cost(service_key: str, *, plan: str) -> int:
     if normalize_plan(plan) == "premium":
         return tariff.premium_cost
     return tariff.free_cost
+
+
+def list_tariffs(*, category: str = "") -> list[ServiceTariff]:
+    normalized = str(category or "").strip().lower()
+    services: list[ServiceTariff] = []
+    for key in sorted(SERVICE_TARIFFS.keys()):
+        tariff = service_tariff(key)
+        if normalized and tariff.category != normalized:
+            continue
+        services.append(tariff)
+    return services
+
+
+def tariff_categories() -> list[str]:
+    categories = {item.category for item in SERVICE_TARIFFS.values()}
+    return sorted(categories)
+
+
+def set_service_tariff_cost(
+    service_key: str,
+    *,
+    free_cost: int | None = None,
+    premium_cost: int | None = None,
+) -> ServiceTariff:
+    key = str(service_key or "").strip().lower()
+    if key not in SERVICE_TARIFFS:
+        raise KeyError(f"Tariff topilmadi: {service_key}")
+    if free_cost is None and premium_cost is None:
+        return service_tariff(key)
+
+    current = service_tariff(key)
+    updated_free = current.free_cost if free_cost is None else max(1, int(free_cost))
+    updated_premium = (
+        current.premium_cost if premium_cost is None else max(1, int(premium_cost))
+    )
+
+    overrides = _load_overrides()
+    defaults = SERVICE_TARIFFS[key]
+    if (
+        updated_free == defaults.free_cost
+        and updated_premium == defaults.premium_cost
+    ):
+        overrides.pop(key, None)
+    else:
+        overrides[key] = {
+            "free_cost": updated_free,
+            "premium_cost": updated_premium,
+        }
+    _save_overrides(overrides)
+    return service_tariff(key)
+
+
+def reset_service_tariff(service_key: str) -> ServiceTariff:
+    key = str(service_key or "").strip().lower()
+    if key not in SERVICE_TARIFFS:
+        raise KeyError(f"Tariff topilmadi: {service_key}")
+    overrides = _load_overrides()
+    overrides.pop(key, None)
+    _save_overrides(overrides)
+    return service_tariff(key)

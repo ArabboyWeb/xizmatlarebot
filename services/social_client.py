@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -135,6 +136,52 @@ def _social_format_selector(*, ffmpeg_location: str) -> str:
     return "/".join([*merged, *progressive])
 
 
+def _is_streamable_video_suffix(suffix: str) -> bool:
+    return suffix.lower() in {".mp4", ".m4v", ".mov"}
+
+
+def _convert_video_to_mp4(path: Path, *, ffmpeg_location: str) -> Path:
+    if not ffmpeg_location or not path.exists():
+        return path
+    if _is_streamable_video_suffix(path.suffix):
+        return path
+    target = path.with_suffix(".mp4")
+    if target.exists():
+        target.unlink(missing_ok=True)
+    command = [
+        ffmpeg_location,
+        "-y",
+        "-i",
+        str(path),
+        "-movflags",
+        "+faststart",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        str(target),
+    ]
+    process = subprocess.run(
+        command,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if process.returncode != 0 or not target.exists() or target.stat().st_size <= 0:
+        target.unlink(missing_ok=True)
+        return path
+    path.unlink(missing_ok=True)
+    return target
+
+
 def _download_social_video_sync(url: str, *, max_bytes: int) -> DownloadedFile:
     if yt_dlp is None:
         raise RuntimeError("Social video yuklash moduli o'rnatilmagan.")
@@ -172,6 +219,7 @@ def _download_social_video_sync(url: str, *, max_bytes: int) -> DownloadedFile:
             files,
             key=lambda item: (item.stat().st_size, item.stat().st_mtime),
         )
+        output = _convert_video_to_mp4(output, ffmpeg_location=ffmpeg_location)
         size = output.stat().st_size
         if size > max_bytes:
             raise RuntimeError("Fayl limitdan katta.")
@@ -186,6 +234,8 @@ def _download_social_video_sync(url: str, *, max_bytes: int) -> DownloadedFile:
         content_type = (
             mimetypes.guess_type(final_output.name)[0] or "application/octet-stream"
         )
+        if not str(content_type).startswith("video/"):
+            content_type = "video/mp4"
         source = "instagram_video" if is_instagram_url(url) else "tiktok_video"
         return DownloadedFile(
             path=final_output,
@@ -205,13 +255,22 @@ def _retag_download(
     title: str,
     source: str,
 ) -> DownloadedFile:
-    suffix = downloaded.path.suffix or Path(downloaded.file_name).suffix or ".mp4"
+    guessed_suffix = mimetypes.guess_extension(str(downloaded.content_type or "").strip())
+    suffix = downloaded.path.suffix or Path(downloaded.file_name).suffix or guessed_suffix or ".mp4"
+    if suffix.lower() in {".bin", ".tmp"}:
+        suffix = guessed_suffix or ".mp4"
     desired_name = _safe_name(f"{title}{suffix}", fallback=downloaded.file_name)
     final_path = downloaded.path
     if downloaded.file_name != desired_name:
         final_path = downloaded.path.with_name(desired_name)
         downloaded.path.rename(final_path)
-    content_type = downloaded.content_type or mimetypes.guess_type(final_path.name)[0] or "video/mp4"
+    content_type = (
+        downloaded.content_type
+        or mimetypes.guess_type(final_path.name)[0]
+        or "video/mp4"
+    )
+    if not str(content_type).startswith("video/"):
+        content_type = "video/mp4"
     return DownloadedFile(
         path=final_path,
         file_name=final_path.name,
