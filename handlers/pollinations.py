@@ -15,7 +15,9 @@ from aiogram.types import (
 from aiogram.types.input_file import BufferedInputFile
 from aiogram.utils.chat_action import ChatActionSender
 
+from services.ai_store import AIStore
 from services.pollinations_client import generate_image
+from services.token_billing import ensure_balance
 
 router = Router(name="pollinations")
 logger = logging.getLogger(__name__)
@@ -201,12 +203,25 @@ async def pollinations_size_handler(
 
 
 @router.message(PollinationsState.waiting_prompt, F.text)
-async def pollinations_prompt_handler(message: Message, state: FSMContext) -> None:
+async def pollinations_prompt_handler(
+    message: Message,
+    state: FSMContext,
+    ai_store: AIStore,
+) -> None:
     prompt = (message.text or "").strip()
     if not prompt or prompt.startswith("/"):
         return
 
     model, size = _settings(await state.get_data())
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "pollinations_generate",
+        reply_markup=pollinations_keyboard(model, size),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     seed = random.randint(1000, 9_999_999)
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
@@ -251,6 +266,12 @@ async def pollinations_prompt_handler(message: Message, state: FSMContext) -> No
             parse_mode="HTML",
             reply_markup=pollinations_result_keyboard(),
         )
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
+    )
     await state.set_state(PollinationsState.waiting_prompt)
 
 

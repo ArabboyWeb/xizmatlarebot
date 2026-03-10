@@ -67,14 +67,38 @@ def register_core_handlers(
     upload_limit_bytes: int,
     download_limit_bytes: int,
 ) -> None:
+    def _referral_link(user_id: int) -> str:
+        bot_username = os.getenv("BOT_USERNAME", "").strip().lstrip("@")
+        if bot_username:
+            return f"https://t.me/{bot_username}?start=ref_{user_id}"
+        return f"ref_{user_id}"
+
+    def _start_payload(message: Message) -> str:
+        text = str(message.text or "").strip()
+        if not text:
+            return ""
+        parts = text.split(maxsplit=1)
+        return parts[1].strip() if len(parts) == 2 else ""
+
+    def _referrer_id_from_payload(payload: str) -> int:
+        clean = str(payload or "").strip().lower()
+        if clean.startswith("ref_"):
+            clean = clean[4:]
+        try:
+            return int(clean)
+        except ValueError:
+            return 0
+
     async def _menu_profile(ai_store: AIStore, user: object | None) -> dict[str, int | str]:
         if user is None:
             return {
                 "user_plan": "free",
                 "token_balance": 0,
                 "referral_count": 0,
+                "referral_link": "",
             }
 
+        user_id = int(getattr(user, "id", 0) or 0)
         full_name = " ".join(
             part
             for part in [
@@ -84,20 +108,22 @@ def register_core_handlers(
             if part
         ).strip()
         profile = await ai_store.ensure_user(
-            user_id=int(getattr(user, "id", 0) or 0),
+            user_id=user_id,
             username=str(getattr(user, "username", "") or "").strip(),
             full_name=full_name,
         )
         return {
             "user_plan": str(profile.get("current_plan", "free") or "free"),
             "token_balance": int(profile.get("token_balance", 0) or 0),
-            "referral_count": 0,
+            "referral_count": int(profile.get("referral_count", 0) or 0),
+            "referral_link": _referral_link(user_id),
         }
 
     async def _answer_main_menu(
         message: Message,
         *,
         ai_store: AIStore,
+        notice: str = "",
     ) -> None:
         is_admin = is_admin_user_id(message.from_user.id if message.from_user else None)
         profile = await _menu_profile(ai_store, message.from_user)
@@ -106,6 +132,7 @@ def register_core_handlers(
                 upload_limit_bytes,
                 download_limit_bytes,
                 is_admin=is_admin,
+                notice=notice,
                 **profile,
             ),
             parse_mode="HTML",
@@ -151,7 +178,28 @@ def register_core_handlers(
         ai_store: AIStore,
     ) -> None:
         await state.clear()
-        await _answer_main_menu(message, ai_store=ai_store)
+        notice = ""
+        referrer_id = _referrer_id_from_payload(_start_payload(message))
+        if message.from_user is not None and referrer_id > 0:
+            result = await ai_store.apply_referral(
+                user_id=int(message.from_user.id),
+                username=str(message.from_user.username or "").strip(),
+                full_name=" ".join(
+                    part
+                    for part in [
+                        str(message.from_user.first_name or "").strip(),
+                        str(message.from_user.last_name or "").strip(),
+                    ]
+                    if part
+                ).strip(),
+                referrer_id=referrer_id,
+            )
+            if bool(result.get("applied")):
+                notice = (
+                    "🎁 Referal bonusi qo'shildi.\n"
+                    f"Sizga: <b>{int(result.get('invitee_bonus', 0) or 0)}</b> token"
+                )
+        await _answer_main_menu(message, ai_store=ai_store, notice=notice)
 
     @dispatcher.message(Command("menu"))
     async def menu_handler(

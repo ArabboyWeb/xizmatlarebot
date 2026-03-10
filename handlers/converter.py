@@ -19,12 +19,15 @@ from aiogram.types import (
 )
 from aiogram.types.input_file import FSInputFile
 from aiogram.utils.chat_action import ChatActionSender
+
+from services.ai_store import AIStore
 from services.converter_tools import (
     convert_with_soffice,
     image_format_sync,
     image_to_pdf_sync,
     pdf_to_images_zip_sync,
 )
+from services.token_billing import ensure_balance
 
 router = Router(name="converter")
 logger = logging.getLogger(__name__)
@@ -197,7 +200,16 @@ async def _answer_conversion_error(
     )
 
 
-async def _handle_word_to_pdf(message: Message) -> None:
+async def _handle_word_to_pdf(message: Message, ai_store: AIStore) -> None:
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "converter_word_to_pdf",
+        reply_markup=result_keyboard("converter:word_to_pdf"),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     work_dir = _make_work_dir()
     try:
         source = await _download_document(message, work_dir, SUPPORTED_WORD_EXTENSIONS)
@@ -215,11 +227,27 @@ async def _handle_word_to_pdf(message: Message) -> None:
     except Exception as error:  # noqa: BLE001
         logger.exception("Word -> PDF konvertatsiyasida kutilmagan xatolik")
         await _answer_conversion_error(message, error, "converter:word_to_pdf")
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-async def _handle_pdf_to_word(message: Message) -> None:
+async def _handle_pdf_to_word(message: Message, ai_store: AIStore) -> None:
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "converter_pdf_to_word",
+        reply_markup=result_keyboard("converter:pdf_to_word"),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     work_dir = _make_work_dir()
     try:
         source = await _download_document(message, work_dir, {".pdf"})
@@ -237,11 +265,27 @@ async def _handle_pdf_to_word(message: Message) -> None:
     except Exception as error:  # noqa: BLE001
         logger.exception("PDF -> Word konvertatsiyasida kutilmagan xatolik")
         await _answer_conversion_error(message, error, "converter:pdf_to_word")
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-async def _handle_image_to_pdf(message: Message) -> None:
+async def _handle_image_to_pdf(message: Message, ai_store: AIStore) -> None:
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "converter_image_to_pdf",
+        reply_markup=result_keyboard("converter:image_to_pdf"),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     work_dir = _make_work_dir()
     try:
         source = await _download_image(message, work_dir)
@@ -264,11 +308,27 @@ async def _handle_image_to_pdf(message: Message) -> None:
     except Exception as error:  # noqa: BLE001
         logger.exception("Image -> PDF konvertatsiyasida kutilmagan xatolik")
         await _answer_conversion_error(message, error, "converter:image_to_pdf")
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-async def _handle_pdf_to_images(message: Message) -> None:
+async def _handle_pdf_to_images(message: Message, ai_store: AIStore) -> None:
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "converter_pdf_to_images",
+        reply_markup=result_keyboard("converter:pdf_to_images"),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     work_dir = _make_work_dir()
     try:
         source = await _download_document(message, work_dir, {".pdf"})
@@ -293,11 +353,31 @@ async def _handle_pdf_to_images(message: Message) -> None:
     except Exception as error:  # noqa: BLE001
         logger.exception("PDF -> Images konvertatsiyasida kutilmagan xatolik")
         await _answer_conversion_error(message, error, "converter:pdf_to_images")
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-async def _handle_image_format(message: Message, target: str) -> None:
+async def _handle_image_format(
+    message: Message,
+    ai_store: AIStore,
+    target: str,
+) -> None:
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "converter_image_format",
+        reply_markup=result_keyboard("converter:image_format"),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     work_dir = _make_work_dir()
     try:
         source = await _download_image(message, work_dir)
@@ -320,6 +400,13 @@ async def _handle_image_format(message: Message, target: str) -> None:
     except Exception as error:  # noqa: BLE001
         logger.exception("Image format konvertatsiyasida kutilmagan xatolik")
         await _answer_conversion_error(message, error, "converter:image_format")
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -331,7 +418,7 @@ async def converter_entry_handler(callback: CallbackQuery, state: FSMContext) ->
     await _safe_edit(
         callback,
         (
-            "<b>Converter Pro</b>\n"
+            "<b>Converter</b>\n"
             "PDF, Word va rasm fayllarni professional konvertatsiya qiling.\n"
             "Kerakli bo'limni tanlang:"
         ),
@@ -416,27 +503,31 @@ async def image_format_target_callback(
 
 
 @router.message(ConverterState.waiting_word_to_pdf, F.document)
-async def word_to_pdf_message(message: Message) -> None:
-    await _handle_word_to_pdf(message)
+async def word_to_pdf_message(message: Message, ai_store: AIStore) -> None:
+    await _handle_word_to_pdf(message, ai_store)
 
 
 @router.message(ConverterState.waiting_pdf_to_word, F.document)
-async def pdf_to_word_message(message: Message) -> None:
-    await _handle_pdf_to_word(message)
+async def pdf_to_word_message(message: Message, ai_store: AIStore) -> None:
+    await _handle_pdf_to_word(message, ai_store)
 
 
 @router.message(ConverterState.waiting_image_to_pdf, F.photo | F.document)
-async def image_to_pdf_message(message: Message) -> None:
-    await _handle_image_to_pdf(message)
+async def image_to_pdf_message(message: Message, ai_store: AIStore) -> None:
+    await _handle_image_to_pdf(message, ai_store)
 
 
 @router.message(ConverterState.waiting_pdf_to_images, F.document)
-async def pdf_to_images_message(message: Message) -> None:
-    await _handle_pdf_to_images(message)
+async def pdf_to_images_message(message: Message, ai_store: AIStore) -> None:
+    await _handle_pdf_to_images(message, ai_store)
 
 
 @router.message(ConverterState.waiting_image_format, F.photo | F.document)
-async def image_format_message(message: Message, state: FSMContext) -> None:
+async def image_format_message(
+    message: Message,
+    state: FSMContext,
+    ai_store: AIStore,
+) -> None:
     data = await state.get_data()
     target = str(data.get("image_target", "")).lower()
     if target not in {"png", "jpg", "webp"}:
@@ -445,7 +536,7 @@ async def image_format_message(message: Message, state: FSMContext) -> None:
             reply_markup=image_format_keyboard(),
         )
         return
-    await _handle_image_format(message, target)
+    await _handle_image_format(message, ai_store, target)
 
 
 @router.message(ConverterState.waiting_word_to_pdf)

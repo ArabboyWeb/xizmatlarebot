@@ -10,6 +10,13 @@ from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware
 
 from services.ai_gateway import MODEL_ALIAS_AUTO, clamp_selected_plan, effective_selected_plan
+from services.token_pricing import (
+    free_daily_tokens,
+    normalize_plan,
+    premium_monthly_tokens,
+    referral_invitee_bonus,
+    referral_inviter_bonus,
+)
 
 try:
     import asyncpg
@@ -50,25 +57,21 @@ def _read_int(name: str, default: int) -> int:
 
 
 def _plan_monthly_credits(plan: str) -> int:
-    normalized = (plan or "free").strip().lower()
+    normalized = normalize_plan(plan)
     if normalized == "premium":
-        return max(1, _read_int("AI_PREMIUM_MONTHLY_CREDITS", 1500))
-    if normalized == "pro":
-        return max(1, _read_int("AI_PRO_MONTHLY_CREDITS", 3000))
-    return max(1, _read_int("AI_FREE_DAILY_REQUESTS", 20))
+        return premium_monthly_tokens()
+    return free_daily_tokens()
 
 
 def _plan_rpm(plan: str) -> int:
-    normalized = (plan or "free").strip().lower()
+    normalized = normalize_plan(plan)
     if normalized == "premium":
         return max(1, _read_int("AI_PREMIUM_RPM", 30))
-    if normalized == "pro":
-        return max(1, _read_int("AI_PRO_RPM", 60))
     return max(1, _read_int("AI_FREE_RPM", 12))
 
 
 def _free_daily_requests() -> int:
-    return max(1, _read_int("AI_FREE_DAILY_REQUESTS", 20))
+    return free_daily_tokens()
 
 
 def _free_cooldown_seconds() -> int:
@@ -189,6 +192,11 @@ class AIStore:
             last_request_at TIMESTAMPTZ,
             total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
             total_completion_tokens BIGINT NOT NULL DEFAULT 0,
+            referrer_id BIGINT,
+            referral_count BIGINT NOT NULL DEFAULT 0,
+            referral_bonus_claimed BOOLEAN NOT NULL DEFAULT FALSE,
+            lifetime_tokens_earned BIGINT NOT NULL DEFAULT 0,
+            lifetime_tokens_spent BIGINT NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
@@ -216,6 +224,21 @@ class AIStore:
             )
             await connection.execute(
                 "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS selected_model TEXT NOT NULL DEFAULT 'auto';"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS referrer_id BIGINT;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS referral_count BIGINT NOT NULL DEFAULT 0;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS referral_bonus_claimed BOOLEAN NOT NULL DEFAULT FALSE;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS lifetime_tokens_earned BIGINT NOT NULL DEFAULT 0;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS lifetime_tokens_spent BIGINT NOT NULL DEFAULT 0;"
             )
 
     async def _ensure_loaded(self) -> None:
@@ -264,6 +287,11 @@ class AIStore:
             "last_request_at": "",
             "total_prompt_tokens": 0,
             "total_completion_tokens": 0,
+            "referrer_id": 0,
+            "referral_count": 0,
+            "referral_bonus_claimed": False,
+            "lifetime_tokens_earned": 0,
+            "lifetime_tokens_spent": 0,
             "created_at": _iso(now),
             "updated_at": _iso(now),
         }
@@ -280,9 +308,7 @@ class AIStore:
             user["username"] = username
         if full_name:
             user["full_name"] = full_name
-        current_plan = str(user.get("current_plan", "free") or "free").strip().lower()
-        if current_plan not in {"free", "premium", "pro"}:
-            current_plan = "free"
+        current_plan = normalize_plan(str(user.get("current_plan", "free") or "free"))
         user["current_plan"] = current_plan
         user["selected_plan"] = clamp_selected_plan(
             str(user.get("selected_plan", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO),
@@ -296,24 +322,31 @@ class AIStore:
         if now >= free_reset_date:
             user["free_requests_used"] = 0
             user["free_reset_date"] = _iso(_next_daily_reset(now))
-            if current_plan == "free":
-                user["token_balance"] = _free_daily_requests()
 
         reset_date = _parse_dt(user.get("reset_date"))
         if current_plan == "free":
             if now >= reset_date:
-                user["token_balance"] = _free_daily_requests()
-                user["reset_date"] = _iso(_next_daily_reset(now))
-            else:
-                remaining = max(
-                    0,
-                    _free_daily_requests() - int(user.get("free_requests_used", 0)),
+                user["token_balance"] = max(
+                    int(user.get("token_balance", 0) or 0),
+                    _free_daily_requests(),
                 )
-                user["token_balance"] = remaining
+                user["reset_date"] = _iso(_next_daily_reset(now))
         elif now >= reset_date:
-            user["token_balance"] = _plan_monthly_credits(current_plan)
+            user["token_balance"] = max(
+                int(user.get("token_balance", 0) or 0),
+                _plan_monthly_credits(current_plan),
+            )
             user["reset_date"] = _iso(_next_monthly_reset(now))
 
+        user["referrer_id"] = int(user.get("referrer_id", 0) or 0)
+        user["referral_count"] = max(0, int(user.get("referral_count", 0) or 0))
+        user["referral_bonus_claimed"] = bool(user.get("referral_bonus_claimed", False))
+        user["lifetime_tokens_earned"] = max(
+            0, int(user.get("lifetime_tokens_earned", 0) or 0)
+        )
+        user["lifetime_tokens_spent"] = max(
+            0, int(user.get("lifetime_tokens_spent", 0) or 0)
+        )
         user["updated_at"] = _iso(now)
         return user
 
@@ -414,6 +447,7 @@ class AIStore:
     ) -> dict[str, Any]:
         now = _utc_now()
         current_plan = str(row["current_plan"] or "free").strip().lower()
+        current_plan = normalize_plan(current_plan)
         token_balance = int(row["token_balance"] or 0)
         free_requests_used = int(row["free_requests_used"] or 0)
         free_reset_date = _parse_dt(row["free_reset_date"])
@@ -427,23 +461,16 @@ class AIStore:
                 UPDATE ai_users
                 SET free_requests_used = 0,
                     free_reset_date = $2,
-                    token_balance = CASE
-                        WHEN current_plan = 'free' THEN $3
-                        ELSE token_balance
-                    END,
                     updated_at = NOW()
                 WHERE user_id = $1
                 """,
                 int(row["user_id"]),
                 free_reset_date,
-                _free_daily_requests(),
             )
-            if current_plan == "free":
-                token_balance = _free_daily_requests()
 
         if current_plan == "free":
             if now >= reset_date:
-                token_balance = _free_daily_requests()
+                token_balance = max(token_balance, _free_daily_requests())
                 reset_date = _next_daily_reset(now)
                 await connection.execute(
                     """
@@ -457,20 +484,8 @@ class AIStore:
                     token_balance,
                     reset_date,
                 )
-            else:
-                token_balance = max(0, _free_daily_requests() - free_requests_used)
-                await connection.execute(
-                    """
-                    UPDATE ai_users
-                    SET token_balance = $2,
-                        updated_at = NOW()
-                    WHERE user_id = $1
-                    """,
-                    int(row["user_id"]),
-                    token_balance,
-                )
         elif now >= reset_date:
-            token_balance = _plan_monthly_credits(current_plan)
+            token_balance = max(token_balance, _plan_monthly_credits(current_plan))
             reset_date = _next_monthly_reset(now)
             await connection.execute(
                 """
@@ -498,7 +513,7 @@ class AIStore:
             "user_id": int(row["user_id"]),
             "username": str(row["username"] or ""),
             "full_name": str(row["full_name"] or ""),
-            "current_plan": str(row["current_plan"] or "free"),
+            "current_plan": normalize_plan(str(row["current_plan"] or "free")),
             "selected_plan": str(row["selected_plan"] or MODEL_ALIAS_AUTO),
             "selected_model": str(row["selected_model"] or MODEL_ALIAS_AUTO),
             "token_balance": int(row["token_balance"] or 0),
@@ -512,6 +527,11 @@ class AIStore:
             ),
             "total_prompt_tokens": int(row["total_prompt_tokens"] or 0),
             "total_completion_tokens": int(row["total_completion_tokens"] or 0),
+            "referrer_id": int(row["referrer_id"] or 0),
+            "referral_count": int(row["referral_count"] or 0),
+            "referral_bonus_claimed": bool(row["referral_bonus_claimed"]),
+            "lifetime_tokens_earned": int(row["lifetime_tokens_earned"] or 0),
+            "lifetime_tokens_spent": int(row["lifetime_tokens_spent"] or 0),
             "created_at": _iso(_parse_dt(row["created_at"])),
             "updated_at": _iso(_parse_dt(row["updated_at"])),
         }
@@ -572,14 +592,16 @@ class AIStore:
             if elapsed < cooldown:
                 wait_seconds = max(wait_seconds, int(cooldown - elapsed + 0.999))
 
-        if effective_plan == "free":
-            free_used = int(user.get("free_requests_used", 0) or 0)
-            if free_used >= _free_daily_requests():
+        token_balance = int(user.get("token_balance", 0) or 0)
+        if token_balance <= 0:
+            if effective_plan == "free":
                 reset_at = _parse_dt(user.get("free_reset_date"))
-                wait_seconds = max(
-                    wait_seconds,
-                    int((reset_at - now).total_seconds() + 0.999),
-                )
+            else:
+                reset_at = _parse_dt(user.get("reset_date"))
+            wait_seconds = max(
+                wait_seconds,
+                int((reset_at - now).total_seconds() + 0.999),
+            )
 
         rpm = _plan_rpm(effective_plan)
         recent_count = await self.requests_in_last_minute(user_id=user_id)
@@ -639,16 +661,13 @@ class AIStore:
             if ok:
                 if effective_plan == "free":
                     user["free_requests_used"] = int(user.get("free_requests_used", 0) or 0) + 1
-                    if str(user.get("current_plan", "free")).strip().lower() == "free":
-                        user["token_balance"] = max(
-                            0,
-                            _free_daily_requests() - int(user["free_requests_used"]),
-                        )
-                else:
-                    user["token_balance"] = max(
-                        0,
-                        int(user.get("token_balance", 0) or 0) - int(credits_used),
-                    )
+                user["token_balance"] = max(
+                    0,
+                    int(user.get("token_balance", 0) or 0) - int(credits_used),
+                )
+                user["lifetime_tokens_spent"] = int(
+                    user.get("lifetime_tokens_spent", 0) or 0
+                ) + int(credits_used)
                 user["total_prompt_tokens"] = int(user.get("total_prompt_tokens", 0) or 0) + int(prompt_tokens)
                 user["total_completion_tokens"] = int(user.get("total_completion_tokens", 0) or 0) + int(completion_tokens)
 
@@ -707,10 +726,8 @@ class AIStore:
                             """
                             UPDATE ai_users
                             SET free_requests_used = free_requests_used + 1,
-                                token_balance = CASE
-                                    WHEN current_plan = 'free' THEN GREATEST(0, $2 - (free_requests_used + 1))
-                                    ELSE token_balance
-                                END,
+                                token_balance = GREATEST(0, token_balance - $2),
+                                lifetime_tokens_spent = lifetime_tokens_spent + $2,
                                 total_prompt_tokens = total_prompt_tokens + $3,
                                 total_completion_tokens = total_completion_tokens + $4,
                                 last_request_at = NOW(),
@@ -727,6 +744,7 @@ class AIStore:
                             """
                             UPDATE ai_users
                             SET token_balance = GREATEST(0, token_balance - $2),
+                                lifetime_tokens_spent = lifetime_tokens_spent + $2,
                                 total_prompt_tokens = total_prompt_tokens + $3,
                                 total_completion_tokens = total_completion_tokens + $4,
                                 last_request_at = NOW(),
@@ -822,9 +840,9 @@ class AIStore:
         plan: str,
         credits: int | None = None,
     ) -> dict[str, Any]:
-        normalized_plan = (plan or "free").strip().lower()
-        if normalized_plan not in {"free", "premium", "pro"}:
-            raise ValueError("Plan faqat free, premium yoki pro bo'lishi kerak.")
+        normalized_plan = normalize_plan(plan)
+        if normalized_plan not in {"free", "premium"}:
+            raise ValueError("Plan faqat free yoki premium bo'lishi kerak.")
         await self.ensure_user(
             user_id=user_id,
             username=username,
@@ -1026,6 +1044,235 @@ class AIStore:
             record["updated_at"] = _iso(_utc_now())
             await self._save_locked()
             return json.loads(json.dumps(record))
+
+    async def charge_tokens(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        amount: int,
+    ) -> dict[str, Any]:
+        token_amount = max(0, int(amount))
+        user = await self.ensure_user(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+        )
+        if token_amount <= 0:
+            return user
+
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                async with connection.transaction():
+                    row = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                        int(user_id),
+                    )
+                    if row is None:
+                        raise RuntimeError("AI foydalanuvchi topilmadi.")
+                    balance = int(row["token_balance"] or 0)
+                    if balance < token_amount:
+                        raise ValueError("Token yetarli emas.")
+                    await connection.execute(
+                        """
+                        UPDATE ai_users
+                        SET token_balance = token_balance - $2,
+                            lifetime_tokens_spent = lifetime_tokens_spent + $2,
+                            updated_at = NOW()
+                        WHERE user_id = $1
+                        """,
+                        int(user_id),
+                        token_amount,
+                    )
+                    updated = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1",
+                        int(user_id),
+                    )
+                if updated is None:
+                    raise RuntimeError("AI foydalanuvchi topilmadi.")
+                return self._serialize_row(updated)
+
+        await self._ensure_loaded()
+        async with self._lock:
+            users = self._data.setdefault("users", {})
+            record = users.get(str(int(user_id)))
+            if not isinstance(record, dict):
+                raise RuntimeError("AI foydalanuvchi topilmadi.")
+            self._normalize_user_locked(record, username=username, full_name=full_name)
+            if int(record.get("token_balance", 0) or 0) < token_amount:
+                raise ValueError("Token yetarli emas.")
+            record["token_balance"] = int(record.get("token_balance", 0) or 0) - token_amount
+            record["lifetime_tokens_spent"] = int(
+                record.get("lifetime_tokens_spent", 0) or 0
+            ) + token_amount
+            record["updated_at"] = _iso(_utc_now())
+            await self._save_locked()
+            return json.loads(json.dumps(record))
+
+    async def award_tokens(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        amount: int,
+    ) -> dict[str, Any]:
+        token_amount = max(0, int(amount))
+        user = await self.ensure_user(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+        )
+        if token_amount <= 0:
+            return user
+
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                await connection.execute(
+                    """
+                    UPDATE ai_users
+                    SET token_balance = token_balance + $2,
+                        lifetime_tokens_earned = lifetime_tokens_earned + $2,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    int(user_id),
+                    token_amount,
+                )
+                row = await connection.fetchrow(
+                    "SELECT * FROM ai_users WHERE user_id = $1",
+                    int(user_id),
+                )
+            if row is None:
+                raise RuntimeError("AI foydalanuvchi topilmadi.")
+            return self._serialize_row(row)
+
+        await self._ensure_loaded()
+        async with self._lock:
+            users = self._data.setdefault("users", {})
+            record = users.get(str(int(user_id)))
+            if not isinstance(record, dict):
+                raise RuntimeError("AI foydalanuvchi topilmadi.")
+            self._normalize_user_locked(record, username=username, full_name=full_name)
+            record["token_balance"] = int(record.get("token_balance", 0) or 0) + token_amount
+            record["lifetime_tokens_earned"] = int(
+                record.get("lifetime_tokens_earned", 0) or 0
+            ) + token_amount
+            record["updated_at"] = _iso(_utc_now())
+            await self._save_locked()
+            return json.loads(json.dumps(record))
+
+    async def apply_referral(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        referrer_id: int,
+    ) -> dict[str, Any]:
+        if not isinstance(referrer_id, int) or referrer_id <= 0 or referrer_id == user_id:
+            return {"applied": False, "reason": "invalid"}
+
+        inviter_bonus = referral_inviter_bonus()
+        invitee_bonus = referral_invitee_bonus()
+        await self.ensure_user(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+        )
+        await self.ensure_user(
+            user_id=referrer_id,
+            username="",
+            full_name="",
+        )
+
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                async with connection.transaction():
+                    referred = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                        int(user_id),
+                    )
+                    referrer = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                        int(referrer_id),
+                    )
+                    if referred is None or referrer is None:
+                        return {"applied": False, "reason": "missing"}
+                    if int(referred["user_id"]) == int(referrer["user_id"]):
+                        return {"applied": False, "reason": "self"}
+                    if int(referred["referrer_id"] or 0) > 0 or bool(
+                        referred["referral_bonus_claimed"]
+                    ):
+                        return {"applied": False, "reason": "exists"}
+
+                    await connection.execute(
+                        """
+                        UPDATE ai_users
+                        SET referrer_id = $2,
+                            referral_bonus_claimed = TRUE,
+                            token_balance = token_balance + $3,
+                            lifetime_tokens_earned = lifetime_tokens_earned + $3,
+                            updated_at = NOW()
+                        WHERE user_id = $1
+                        """,
+                        int(user_id),
+                        int(referrer_id),
+                        int(invitee_bonus),
+                    )
+                    await connection.execute(
+                        """
+                        UPDATE ai_users
+                        SET referral_count = referral_count + 1,
+                            token_balance = token_balance + $2,
+                            lifetime_tokens_earned = lifetime_tokens_earned + $2,
+                            updated_at = NOW()
+                        WHERE user_id = $1
+                        """,
+                        int(referrer_id),
+                        int(inviter_bonus),
+                    )
+            return {
+                "applied": True,
+                "inviter_bonus": inviter_bonus,
+                "invitee_bonus": invitee_bonus,
+            }
+
+        await self._ensure_loaded()
+        async with self._lock:
+            users = self._data.setdefault("users", {})
+            referred = users.get(str(int(user_id)))
+            referrer = users.get(str(int(referrer_id)))
+            if not isinstance(referred, dict) or not isinstance(referrer, dict):
+                return {"applied": False, "reason": "missing"}
+            self._normalize_user_locked(referred, username=username, full_name=full_name)
+            self._normalize_user_locked(referrer, username="", full_name="")
+            if int(referred.get("referrer_id", 0) or 0) > 0 or bool(
+                referred.get("referral_bonus_claimed", False)
+            ):
+                return {"applied": False, "reason": "exists"}
+
+            referred["referrer_id"] = int(referrer_id)
+            referred["referral_bonus_claimed"] = True
+            referred["token_balance"] = int(referred.get("token_balance", 0) or 0) + invitee_bonus
+            referred["lifetime_tokens_earned"] = int(
+                referred.get("lifetime_tokens_earned", 0) or 0
+            ) + invitee_bonus
+            referred["updated_at"] = _iso(_utc_now())
+
+            referrer["referral_count"] = int(referrer.get("referral_count", 0) or 0) + 1
+            referrer["token_balance"] = int(referrer.get("token_balance", 0) or 0) + inviter_bonus
+            referrer["lifetime_tokens_earned"] = int(
+                referrer.get("lifetime_tokens_earned", 0) or 0
+            ) + inviter_bonus
+            referrer["updated_at"] = _iso(_utc_now())
+            await self._save_locked()
+            return {
+                "applied": True,
+                "inviter_bonus": inviter_bonus,
+                "invitee_bonus": invitee_bonus,
+            }
 
 
 class AIContextMiddleware(BaseMiddleware):

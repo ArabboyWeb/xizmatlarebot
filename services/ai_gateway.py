@@ -8,6 +8,8 @@ from typing import Any
 
 import aiohttp
 
+from services.token_pricing import ai_min_cost
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 GOOGLE_API_URL = (
@@ -22,7 +24,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "o'zbek tilida javob qaytaring."
 )
 MODEL_ALIAS_AUTO = "auto"
-PLAN_LEVELS = {"free": 0, "premium": 1, "pro": 2}
+PLAN_LEVELS = {"free": 0, "premium": 1}
 
 
 @dataclass(slots=True)
@@ -83,13 +85,6 @@ def _premium_complex_model() -> str:
     return _env("AI_PREMIUM_MODEL_COMPLEX", "x-ai/grok-4.1-fast")
 
 
-def _pro_provider_model() -> tuple[str, str]:
-    provider = _env("AI_PRO_PROVIDER", "openai").lower()
-    if provider == "google":
-        return "google", _env("AI_PRO_GOOGLE_MODEL", "gemini-3.1-pro-preview")
-    return "openai", _env("AI_PRO_OPENAI_MODEL", "gpt-5.2")
-
-
 def plan_level(plan: str) -> int:
     return PLAN_LEVELS.get((plan or "free").strip().lower(), 0)
 
@@ -112,22 +107,15 @@ def effective_selected_plan(user: dict[str, Any]) -> str:
         str(user.get("selected_plan", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO),
         current_plan,
     )
-    available_plan = current_plan
-    if current_plan in {"premium", "pro"} and int(user.get("token_balance", 0) or 0) <= 0:
-        available_plan = "free"
-    target_plan = current_plan if selected_plan == MODEL_ALIAS_AUTO else selected_plan
-    return min(target_plan, available_plan, key=plan_level)
+    return current_plan if selected_plan == MODEL_ALIAS_AUTO else selected_plan
 
 
 def _manual_model_specs() -> dict[str, tuple[str, str, int, str]]:
-    provider, pro_model = _pro_provider_model()
-    pro_label = "GPT-5.2" if provider == "openai" else "Gemini 3.1 Pro"
     return {
         "free_glm": ("openrouter", _free_simple_model(), 1, "GLM-4.5 Air Free"),
         "free_qwen": ("openrouter", _free_complex_model(), 1, "Qwen 3 VL Thinking"),
         "premium_mini": ("openrouter", _premium_simple_model(), 1, "GPT-5 Mini"),
         "premium_grok": ("openrouter", _premium_complex_model(), 2, "Grok 4.1 Fast"),
-        "pro_official": (provider, pro_model, 3, pro_label),
     }
 
 
@@ -135,9 +123,7 @@ def allowed_model_aliases_for_plan(plan: str) -> list[str]:
     normalized = (plan or "free").strip().lower()
     if normalized == "free":
         return ["free_glm", "free_qwen"]
-    if normalized == "premium":
-        return ["premium_mini", "premium_grok"]
-    return ["premium_mini", "premium_grok", "pro_official"]
+    return ["premium_mini", "premium_grok"]
 
 
 def model_options_for_plan(plan: str) -> list[tuple[str, str]]:
@@ -350,33 +336,13 @@ def select_route(
             model_alias="premium_grok",
         )
 
-    if complexity == "simple":
-        return AIRouteDecision(
-            provider="openrouter",
-            model=_premium_simple_model(),
-            route="pro_simple_to_premium",
-            credit_multiplier=1,
-            effective_plan="pro",
-            model_alias="premium_mini",
-        )
-    if complexity == "standard":
-        return AIRouteDecision(
-            provider="openrouter",
-            model=_premium_complex_model(),
-            route="pro_standard_to_premium",
-            credit_multiplier=2,
-            effective_plan="pro",
-            model_alias="premium_grok",
-        )
-
-    provider, model = _pro_provider_model()
     return AIRouteDecision(
-        provider=provider,
-        model=model,
-        route=f"pro_official_{provider}",
-        credit_multiplier=3,
-        effective_plan="pro",
-        model_alias="pro_official",
+        provider="openrouter",
+        model=_premium_complex_model(),
+        route="premium_complex",
+        credit_multiplier=2,
+        effective_plan="premium",
+        model_alias="premium_grok",
     )
 
 
@@ -386,12 +352,46 @@ def estimate_credits(
     completion_tokens: int,
     decision: AIRouteDecision,
 ) -> int:
-    if decision.effective_plan == "free":
-        return 1
+    min_cost = ai_min_cost(decision.effective_plan)
     token_unit = max(100, int(_env("AI_CREDIT_TOKEN_UNIT", "1000")))
     total_tokens = max(1, int(prompt_tokens) + int(completion_tokens))
     base_units = max(1, math.ceil(total_tokens / token_unit))
-    return base_units * max(1, int(decision.credit_multiplier))
+    if decision.effective_plan == "free":
+        multiplier = max(2, int(_env("BOT_AI_FREE_COST_MULTIPLIER", "4")))
+        return max(min_cost, base_units * multiplier)
+    multiplier = max(1, int(_env("BOT_AI_PREMIUM_COST_MULTIPLIER", "2")))
+    return max(
+        min_cost,
+        base_units * max(1, int(decision.credit_multiplier)) * multiplier,
+    )
+
+
+def projected_credits(
+    *,
+    user_text: str,
+    current_plan: str,
+    effective_plan: str,
+    selected_model_alias: str = MODEL_ALIAS_AUTO,
+) -> int:
+    decision = select_route(
+        user_text,
+        current_plan=current_plan,
+        effective_plan=effective_plan,
+        selected_model_alias=selected_model_alias,
+    )
+    complexity = _complexity(user_text)
+    approx_prompt_tokens = max(1, math.ceil(len(str(user_text or "").strip()) / 4))
+    if complexity == "simple":
+        approx_completion_tokens = 700
+    elif complexity == "standard":
+        approx_completion_tokens = 1600
+    else:
+        approx_completion_tokens = 3200
+    return estimate_credits(
+        prompt_tokens=approx_prompt_tokens,
+        completion_tokens=approx_completion_tokens,
+        decision=decision,
+    )
 
 
 def build_messages(history: list[dict[str, str]], user_text: str) -> list[dict[str, str]]:

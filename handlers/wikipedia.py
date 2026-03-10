@@ -13,6 +13,8 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
+from services.ai_store import AIStore
+from services.token_billing import ensure_balance
 from services.wikipedia_client import search_wikipedia_summary
 
 router = Router(name="wikipedia")
@@ -102,7 +104,11 @@ async def wikipedia_lang_handler(callback: CallbackQuery, state: FSMContext) -> 
 
 
 @router.message(WikipediaState.waiting_query, F.text)
-async def wikipedia_query_handler(message: Message, state: FSMContext) -> None:
+async def wikipedia_query_handler(
+    message: Message,
+    state: FSMContext,
+    ai_store: AIStore,
+) -> None:
     query = (message.text or "").strip()
     if not query or query.startswith("/"):
         return
@@ -110,6 +116,15 @@ async def wikipedia_query_handler(message: Message, state: FSMContext) -> None:
     lang = str((await state.get_data()).get("wiki_lang", "uz")).lower()
     if lang not in {"uz", "en", "ru"}:
         lang = "uz"
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "wikipedia_search",
+        reply_markup=wikipedia_keyboard(lang),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
 
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
@@ -137,6 +152,12 @@ async def wikipedia_query_handler(message: Message, state: FSMContext) -> None:
         text,
         parse_mode="HTML",
         reply_markup=wikipedia_keyboard(lang),
+    )
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
     )
 
 

@@ -29,8 +29,10 @@ from services.ai_gateway import (
     model_label,
     model_options_for_plan,
     plan_level,
+    projected_credits,
 )
 from services.ai_store import AIStore
+from services.token_billing import ensure_balance
 
 router = Router(name="ai_chat")
 
@@ -55,12 +57,10 @@ def _user_identity(message_or_callback: Message | CallbackQuery) -> tuple[int, s
 
 
 def _remaining_free_requests(user: dict[str, object]) -> int:
-    free_quota = max(1, int(os.getenv("AI_FREE_DAILY_REQUESTS", "20") or "20"))
     balance = int(user.get("token_balance", 0) or 0)
-    free_used = int(user.get("free_requests_used", 0) or 0)
     if str(user.get("current_plan", "free")).strip().lower() == "free":
         return balance
-    return max(0, int(balance <= 0) * max(0, free_quota - free_used))
+    return balance
 
 
 def _selected_plan_label(user: dict[str, object]) -> str:
@@ -176,7 +176,6 @@ def _plan_menu_keyboard(user: dict[str, object]) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text=label("premium", "⭐"), callback_data="ai:plan:set:premium"
                 ),
-                InlineKeyboardButton(text=label("pro", "👑"), callback_data="ai:plan:set:pro"),
             ],
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="ai:dashboard")],
         ]
@@ -219,13 +218,11 @@ def _dashboard_text(user: dict[str, object]) -> str:
         f"🧭 Tanlangan rejim: <b>{html.escape(_selected_plan_label(user))}</b>",
         f"🧠 Tanlangan model: <b>{html.escape(_selected_model_label(user))}</b>",
     ]
-    if effective_plan == "free" and current_plan in {"premium", "pro"} and token_balance <= 0:
-        rows.append("⚠️ Holat: <b>Free fallback</b>")
-        rows.append(f"🟢 Bugungi free so'rovlar: <b>{_remaining_free_requests(user)}</b>")
-        rows.append(f"🔄 Free reset: <b>{html.escape(free_reset_date)}</b>")
+    rows.append(f"💳 Token balans: <b>{token_balance}</b>")
+    if current_plan == "free":
+        rows.append(f"🔄 Daily reset: <b>{html.escape(free_reset_date)}</b>")
     else:
-        rows.append(f"💳 Kredit: <b>{token_balance}</b>")
-        rows.append(f"🔄 Reset: <b>{html.escape(reset_date)}</b>")
+        rows.append(f"🔄 Monthly reset: <b>{html.escape(reset_date)}</b>")
     rows.append(f"📥 Input tokenlar: <b>{total_in}</b>")
     rows.append(f"📤 Output tokenlar: <b>{total_out}</b>")
     rows.append("")
@@ -238,15 +235,17 @@ def _plans_text() -> str:
     return (
         "<b>📚 AI tariflar</b>\n\n"
         "<b>🟢 Free</b>\n"
-        "- kuniga 20 ta so'rov\n"
+        "- kunlik token paketi\n"
         "- har so'rov orasida 5 soniya kutish\n"
+        "- AI, qidiruv va media servislar token bilan ishlaydi\n"
         "- OpenRouter free modellar\n\n"
         "<b>⭐ Premium</b>\n"
-        "- oyiga kreditli limit\n"
+        "- oylik katta token paketi\n"
+        "- servislar uchun arzonroq token sarfi\n"
         "- GPT-5 Mini va Grok Fast\n\n"
-        "<b>👑 Pro</b>\n"
-        "- oyiga yuqori kredit limiti\n"
-        "- murakkab savollar official provider modeliga o'tadi"
+        "<b>🎁 Referral</b>\n"
+        "- do'st taklif qilsangiz ikkalangiz ham bonus token olasiz\n"
+        "- tokendan ko'p yeydigan bo'limlar: AI, rasm yaratish, yuklab olish va konvertor"
     )
 
 
@@ -256,7 +255,7 @@ def _plan_menu_text(user: dict[str, object]) -> str:
         f"Asosiy plan: <b>{html.escape(str(user.get('current_plan', 'free')).title())}</b>\n"
         f"Tanlangan rejim: <b>{html.escape(_selected_plan_label(user))}</b>\n\n"
         "Free hamma uchun ochiq.\n"
-        "Premium va Pro faqat shu plan sizga biriktirilgan bo'lsa ishlaydi."
+        "Premium faqat shu plan sizga biriktirilgan bo'lsa ishlaydi."
     )
 
 
@@ -665,18 +664,13 @@ async def ai_prompt_handler(
     ]
     current_plan = str(updated_user.get("current_plan", "free") or "free").strip().lower()
     token_balance = int(updated_user.get("token_balance", 0) or 0)
-    if effective_plan == "free" and current_plan in {"premium", "pro"} and token_balance <= 0:
-        footer_rows.append("⚠️ <b>Paid kredit:</b> <b>0</b>")
+    if current_plan == "free":
         footer_rows.append(
-            f"🟢 <b>Free fallback qolgan:</b> <b>{_remaining_free_requests(updated_user)}</b>"
-        )
-    elif current_plan == "free":
-        footer_rows.append(
-            f"🟢 <b>Bugungi qolgan so'rov:</b> <b>{_remaining_free_requests(updated_user)}</b>"
+            f"🟢 <b>Qolgan free token:</b> <b>{_remaining_free_requests(updated_user)}</b>"
         )
     else:
         footer_rows.append(
-            f"💳 <b>Qolgan kredit:</b> <b>{int(updated_user.get('token_balance', 0) or 0)}</b>"
+            f"💳 <b>Qolgan premium token:</b> <b>{int(updated_user.get('token_balance', 0) or 0)}</b>"
         )
     footer = "\n".join(footer_rows)
     answer_text = result.text.strip() or "Javob bo'sh qaytdi."
@@ -717,7 +711,7 @@ async def ai_set_plan_command(
         return
     parts = (message.text or "").split()
     if len(parts) < 3:
-        await message.answer("Format: /ai_set_plan <user_id> <free|premium|pro> [credits]")
+        await message.answer("Format: /ai_set_plan <user_id> <free|premium> [credits]")
         return
     try:
         user_id = int(parts[1])

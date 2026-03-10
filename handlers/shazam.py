@@ -13,7 +13,9 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
+from services.ai_store import AIStore
 from services.rapidapi_shazam_client import shazam_autocomplete
+from services.token_billing import ensure_balance
 
 router = Router(name="shazam")
 logger = logging.getLogger(__name__)
@@ -104,10 +106,23 @@ async def shazam_start_handler(callback: CallbackQuery, state: FSMContext) -> No
 
 
 @router.message(ShazamState.waiting_query, F.text)
-async def shazam_query_handler(message: Message, state: FSMContext) -> None:
+async def shazam_query_handler(
+    message: Message,
+    state: FSMContext,
+    ai_store: AIStore,
+) -> None:
     query = (message.text or "").strip()
     if not query or query.startswith("/"):
         return
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "shazam_search",
+        reply_markup=shazam_prompt_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
 
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
@@ -129,6 +144,12 @@ async def shazam_query_handler(message: Message, state: FSMContext) -> None:
         ),
         parse_mode="HTML",
         reply_markup=shazam_result_keyboard(),
+    )
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
     )
 
 

@@ -13,6 +13,8 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
+from services.ai_store import AIStore
+from services.token_billing import ensure_balance
 from services.rapidapi_translate_client import language_name, translate_text
 
 router = Router(name="translate")
@@ -173,11 +175,24 @@ async def translate_target_handler(callback: CallbackQuery, state: FSMContext) -
 
 
 @router.message(TranslateState.waiting_text, F.text)
-async def translate_text_handler(message: Message, state: FSMContext) -> None:
+async def translate_text_handler(
+    message: Message,
+    state: FSMContext,
+    ai_store: AIStore,
+) -> None:
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
         return
     source, target = _settings(await state.get_data())
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "translate_text",
+        reply_markup=translate_keyboard(source, target),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             result = await translate_text(text, source, target)
@@ -199,6 +214,12 @@ async def translate_text_handler(message: Message, state: FSMContext) -> None:
         ),
         parse_mode="HTML",
         reply_markup=result_keyboard(),
+    )
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
     )
 
 

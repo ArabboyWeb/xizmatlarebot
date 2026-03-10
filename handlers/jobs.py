@@ -13,7 +13,9 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
+from services.ai_store import AIStore
 from services.jsearch_client import search_jobs
+from services.token_billing import ensure_balance
 
 router = Router(name="jobs")
 logger = logging.getLogger(__name__)
@@ -108,10 +110,23 @@ async def jobs_start_handler(callback: CallbackQuery, state: FSMContext) -> None
 
 
 @router.message(JobsState.waiting_query, F.text)
-async def jobs_query_handler(message: Message, state: FSMContext) -> None:
+async def jobs_query_handler(
+    message: Message,
+    state: FSMContext,
+    ai_store: AIStore,
+) -> None:
     query = (message.text or "").strip()
     if not query or query.startswith("/"):
         return
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "jobs_search",
+        reply_markup=jobs_prompt_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
 
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
@@ -129,6 +144,12 @@ async def jobs_query_handler(message: Message, state: FSMContext) -> None:
         _build_jobs_text(data.get("query", query), list(data.get("jobs", []))),
         parse_mode="HTML",
         reply_markup=jobs_result_keyboard(),
+    )
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
     )
 
 

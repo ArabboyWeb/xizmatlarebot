@@ -8,6 +8,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.chat_action import ChatActionSender
 
+from services.ai_store import AIStore
+from services.token_billing import ensure_balance
 from services.currency_client import build_currency_text, fetch_currency_rates
 
 router = Router(name="currency")
@@ -32,10 +34,20 @@ def currency_error_text(message: str) -> str:
     )
 
 
-async def render_currency(callback: CallbackQuery) -> None:
+async def render_currency(callback: CallbackQuery, ai_store: AIStore) -> None:
     if callback.message is None:
         await callback.answer()
         return
+
+    charge = await ensure_balance(
+        ai_store,
+        callback,
+        "currency_refresh",
+        reply_markup=currency_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
 
     if callback.data == "currency:refresh":
         await callback.answer("Yangilanmoqda...")
@@ -56,6 +68,13 @@ async def render_currency(callback: CallbackQuery) -> None:
     except Exception as error:  # noqa: BLE001
         logger.exception("CBU modulida kutilmagan xatolik")
         text = currency_error_text(f"Kutilmagan xatolik: {error}")
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
 
     try:
         await callback.message.edit_text(
@@ -69,10 +88,10 @@ async def render_currency(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "services:currency")
-async def currency_menu_handler(callback: CallbackQuery) -> None:
-    await render_currency(callback)
+async def currency_menu_handler(callback: CallbackQuery, ai_store: AIStore) -> None:
+    await render_currency(callback, ai_store)
 
 
 @router.callback_query(F.data == "currency:refresh")
-async def currency_refresh_handler(callback: CallbackQuery) -> None:
-    await render_currency(callback)
+async def currency_refresh_handler(callback: CallbackQuery, ai_store: AIStore) -> None:
+    await render_currency(callback, ai_store)

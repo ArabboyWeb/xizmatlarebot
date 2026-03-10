@@ -13,6 +13,8 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
+from services.ai_store import AIStore
+from services.token_billing import ensure_balance
 from services.weather_client import (
     build_weather_html,
     fetch_current_weather,
@@ -163,10 +165,19 @@ async def weather_location_callback(callback: CallbackQuery, state: FSMContext) 
 
 
 @router.message(WeatherState.waiting_city, F.text)
-async def weather_city_message(message: Message) -> None:
+async def weather_city_message(message: Message, ai_store: AIStore) -> None:
     city = (message.text or "").strip()
     if not city or city.startswith("/"):
         return
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "weather_lookup",
+        reply_markup=weather_city_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     try:
         await _send_weather_by_city(message, city)
     except (ValueError, RuntimeError, TimeoutError, ConnectionError) as error:
@@ -182,12 +193,28 @@ async def weather_city_message(message: Message) -> None:
             parse_mode="HTML",
             reply_markup=weather_city_keyboard(),
         )
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
 
 
 @router.message(WeatherState.waiting_location, F.location)
-async def weather_location_message(message: Message) -> None:
+async def weather_location_message(message: Message, ai_store: AIStore) -> None:
     if message.location is None:
         return
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "weather_lookup",
+        reply_markup=weather_location_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     try:
         await _send_weather_by_location(
             message, message.location.latitude, message.location.longitude
@@ -204,6 +231,13 @@ async def weather_location_message(message: Message) -> None:
             f"<b>Kutilmagan xatolik</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
             reply_markup=weather_location_keyboard(),
+        )
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
         )
 
 

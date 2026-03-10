@@ -14,6 +14,8 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
+from services.ai_store import AIStore
+from services.token_billing import ensure_balance
 from services.tempmail_client import (
     TempMailMessagePreview,
     create_mailbox,
@@ -139,11 +141,22 @@ async def tempmail_entry_handler(callback: CallbackQuery, state: FSMContext) -> 
 
 @router.callback_query(F.data == "tempmail:new")
 async def tempmail_new_email_handler(
-    callback: CallbackQuery, state: FSMContext
+    callback: CallbackQuery,
+    state: FSMContext,
+    ai_store: AIStore,
 ) -> None:
     if callback.message is None:
         await callback.answer()
         return
+    charge = await ensure_balance(
+        ai_store,
+        callback,
+        "tempmail_new",
+        reply_markup=tempmail_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     await callback.answer("Mailbox yaratilmoqda...")
     try:
         async with ChatActionSender.typing(
@@ -166,13 +179,33 @@ async def tempmail_new_email_handler(
             f"<b>1secmail xatosi</b>\n{html.escape(str(error))}",
             tempmail_keyboard(),
         )
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
 
 
 @router.callback_query(F.data == "tempmail:inbox")
-async def tempmail_inbox_handler(callback: CallbackQuery, state: FSMContext) -> None:
+async def tempmail_inbox_handler(
+    callback: CallbackQuery,
+    state: FSMContext,
+    ai_store: AIStore,
+) -> None:
     if callback.message is None:
         await callback.answer()
         return
+    charge = await ensure_balance(
+        ai_store,
+        callback,
+        "tempmail_inbox",
+        reply_markup=tempmail_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     await callback.answer("Inbox yangilanmoqda...")
     try:
         async with ChatActionSender.typing(
@@ -186,6 +219,13 @@ async def tempmail_inbox_handler(callback: CallbackQuery, state: FSMContext) -> 
             callback,
             f"<b>Inbox xatosi</b>\n{html.escape(str(error))}",
             tempmail_keyboard(),
+        )
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
         )
 
 
@@ -217,7 +257,11 @@ async def tempmail_read_prompt_handler(
 
 
 @router.message(TempMailState.waiting_message_id, F.text)
-async def tempmail_read_message_handler(message: Message, state: FSMContext) -> None:
+async def tempmail_read_message_handler(
+    message: Message,
+    state: FSMContext,
+    ai_store: AIStore,
+) -> None:
     raw = (message.text or "").strip()
     if not raw or raw.startswith("/"):
         return
@@ -229,6 +273,15 @@ async def tempmail_read_message_handler(message: Message, state: FSMContext) -> 
             reply_markup=read_keyboard(),
         )
         return
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "tempmail_read",
+        reply_markup=read_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
 
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
@@ -272,6 +325,12 @@ async def tempmail_read_message_handler(message: Message, state: FSMContext) -> 
         response_text,
         parse_mode="HTML",
         reply_markup=read_keyboard(),
+    )
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
     )
 
 

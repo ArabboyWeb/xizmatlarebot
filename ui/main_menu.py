@@ -13,8 +13,6 @@ def _plan_label(plan: str) -> str:
     normalized = str(plan or "free").strip().lower()
     if normalized == "premium":
         return "Premium"
-    if normalized == "pro":
-        return "Pro"
     return "Free (Oddiy)"
 
 
@@ -167,10 +165,12 @@ def main_menu_text(
     user_plan: str = "free",
     token_balance: int = 0,
     referral_count: int = 0,
+    referral_link: str = "",
+    notice: str = "",
     is_admin: bool = False,
 ) -> str:
     _ = upload_limit_bytes, download_limit_bytes, is_admin
-    return (
+    text = (
         "<b>Assalomu alaykum! Xizmatlar E-Botga xush kelibsiz.</b>\n"
         "Pastdagi bo'limlardan birini tanlang.\n\n"
         f"👤 Sizning holatingiz: <b>{_plan_label(user_plan)}</b>\n"
@@ -179,6 +179,11 @@ def main_menu_text(
         "AI bilan cheksiz muloqot va yuqori tezlik uchun "
         "<b>Premium</b> tarifni faollashtiring!"
     )
+    if notice:
+        text += f"\n\n{notice}"
+    if referral_link:
+        text += f"\n\n🔗 Referal linkingiz: <code>{referral_link}</code>"
+    return text
 
 
 def section_menu_text(
@@ -187,6 +192,7 @@ def section_menu_text(
     user_plan: str = "free",
     token_balance: int = 0,
     referral_count: int = 0,
+    referral_link: str = "",
 ) -> str:
     if section == "ai":
         return (
@@ -225,7 +231,7 @@ def section_menu_text(
             "📧 Vaqtinchalik pochta"
         )
     if section == "cabinet":
-        return (
+        text = (
             "<b>👤 Kabinet / Balans</b>\n"
             "Hisobingiz bo'yicha qisqa ma'lumot.\n\n"
             f"👤 Holat: <b>{_plan_label(user_plan)}</b>\n"
@@ -233,6 +239,9 @@ def section_menu_text(
             f"👫 Referal: <b>{max(0, int(referral_count))} ta</b>\n\n"
             "Balans tafsiloti va Premium tariflar uchun tugmalardan foydalaning."
         )
+        if referral_link:
+            text += f"\n\n🔗 Referal link: <code>{referral_link}</code>"
+        return text
     return ""
 
 

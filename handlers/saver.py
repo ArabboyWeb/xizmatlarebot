@@ -17,6 +17,7 @@ from aiogram.types import (
 from aiogram.types.input_file import FSInputFile
 from aiogram.utils.chat_action import ChatActionSender
 
+from services.ai_store import AIStore
 from services.analytics_store import AnalyticsStore
 from services.social_client import (
     download_social_video,
@@ -32,6 +33,7 @@ from services.saver_client import (
     download_url,
     saver_limit_bytes,
 )
+from services.token_billing import ensure_balance
 from services.youtube_client import download_youtube
 
 SAVE_YOUTUBE_VIDEO_QUALITIES = {"360", "720"}
@@ -394,6 +396,7 @@ async def save_url_handler(
     message: Message,
     state: FSMContext,
     analytics_store: AnalyticsStore,
+    ai_store: AIStore,
 ) -> None:
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
@@ -415,6 +418,15 @@ async def save_url_handler(
         return
     if candidate_url and is_social_video_url(candidate_url):
         platform = social_platform_name(candidate_url)
+        charge = await ensure_balance(
+            ai_store,
+            message,
+            "save_social_video",
+            reply_markup=save_keyboard(),
+        )
+        if charge is None:
+            return
+        _user, cost, user_id, username, full_name = charge
         try:
             downloaded = await download_and_send_social(
                 message,
@@ -424,6 +436,12 @@ async def save_url_handler(
             )
         except Exception:
             return
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
 
         if message.from_user is not None:
             await analytics_store.record_download(
@@ -443,6 +461,15 @@ async def save_url_handler(
         await state.set_state(SaverState.waiting_url)
         return
 
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "save_direct",
+        reply_markup=save_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     try:
         downloaded = await download_and_send_url(
             message,
@@ -452,6 +479,12 @@ async def save_url_handler(
         )
     except Exception:
         return
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
+    )
 
     if message.from_user is not None:
         await analytics_store.record_download(
@@ -476,6 +509,7 @@ async def save_youtube_callback(
     callback: CallbackQuery,
     state: FSMContext,
     analytics_store: AnalyticsStore,
+    ai_store: AIStore,
 ) -> None:
     if callback.message is None:
         await callback.answer("Xabar topilmadi", show_alert=True)
@@ -504,6 +538,16 @@ async def save_youtube_callback(
         await callback.answer("Format noto'g'ri", show_alert=True)
         return
 
+    service_key = "save_youtube_video" if mode == "video" else "save_youtube_audio"
+    charge = await ensure_balance(
+        ai_store,
+        callback,
+        service_key,
+        reply_markup=save_youtube_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     await callback.answer("Yuklanmoqda...")
     try:
         downloaded = await download_and_send_youtube(
@@ -516,6 +560,12 @@ async def save_youtube_callback(
         )
     except Exception:
         return
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
+    )
 
     if callback.from_user is not None:
         await analytics_store.record_download(

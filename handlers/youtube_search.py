@@ -17,6 +17,7 @@ from aiogram.types import (
 from aiogram.utils.chat_action import ChatActionSender
 
 from handlers.saver import send_downloaded_file
+from services.ai_store import AIStore
 from services.analytics_store import AnalyticsStore
 from services.saver_client import (
     DownloadedFile,
@@ -30,6 +31,7 @@ from services.social_client import (
     is_social_video_url,
     social_platform_name,
 )
+from services.token_billing import ensure_balance
 from services.youtube_client import AUDIO_BITRATES, VIDEO_QUALITIES, download_youtube, search_youtube
 
 router = Router(name="youtube_search")
@@ -477,6 +479,7 @@ async def youtube_input_handler(
     message: Message,
     state: FSMContext,
     analytics_store: AnalyticsStore,
+    ai_store: AIStore,
 ) -> None:
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
@@ -489,6 +492,18 @@ async def youtube_input_handler(
         candidate_url = ""
 
     if candidate_url and is_youtube_url(candidate_url):
+        service_key = (
+            "youtube_download_video" if mode == "video" else "youtube_download_audio"
+        )
+        charge = await ensure_balance(
+            ai_store,
+            message,
+            service_key,
+            reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
+        )
+        if charge is None:
+            return
+        _user, cost, user_id, username, full_name = charge
         try:
             downloaded = await _download_and_send_youtube(
                 message,
@@ -501,6 +516,12 @@ async def youtube_input_handler(
             )
         except Exception:
             return
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
 
         if message.from_user is not None:
             await _record_download(
@@ -523,6 +544,15 @@ async def youtube_input_handler(
             )
             return
         platform = social_platform_name(candidate_url)
+        charge = await ensure_balance(
+            ai_store,
+            message,
+            "social_download",
+            reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
+        )
+        if charge is None:
+            return
+        _user, cost, user_id, username, full_name = charge
         try:
             downloaded = await _download_and_send_social(
                 message,
@@ -532,6 +562,12 @@ async def youtube_input_handler(
             )
         except Exception:
             return
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
 
         if message.from_user is not None:
             await _record_download(
@@ -543,6 +579,15 @@ async def youtube_input_handler(
         await state.set_state(YoutubeState.waiting_input)
         return
 
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "youtube_search",
+        reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             result = await search_youtube(text, limit=6)
@@ -574,6 +619,12 @@ async def youtube_input_handler(
             audio_bitrate=audio_bitrate,
         ),
     )
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
+    )
 
 
 @router.callback_query(F.data.startswith("youtube:download:"))
@@ -581,6 +632,7 @@ async def youtube_download_callback(
     callback: CallbackQuery,
     state: FSMContext,
     analytics_store: AnalyticsStore,
+    ai_store: AIStore,
 ) -> None:
     if callback.message is None:
         await callback.answer("Xabar topilmadi", show_alert=True)
@@ -615,6 +667,23 @@ async def youtube_download_callback(
         return
 
     mode, quality, audio_bitrate = _settings(data)
+    service_key = (
+        "youtube_download_video" if mode == "video" else "youtube_download_audio"
+    )
+    charge = await ensure_balance(
+        ai_store,
+        callback,
+        service_key,
+        reply_markup=youtube_results_keyboard(
+            videos,
+            mode=mode,
+            quality=quality,
+            audio_bitrate=audio_bitrate,
+        ),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
     await callback.answer("Yuklanmoqda...")
     try:
         downloaded = await _download_and_send_youtube(
@@ -633,6 +702,12 @@ async def youtube_download_callback(
         )
     except Exception:
         return
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
+    )
 
     if callback.from_user is not None:
         await _record_download(
