@@ -3,7 +3,7 @@
 Telegram bot faqat **free API** servislar bilan ishlaydi.
 
 ## Yangi servislar
-- `Saqlash` - faqat direct fayl linkini yuklab, faylni chatga qaytaradi.
+- `Saqlash` - direct fayl, YouTube, Instagram va TikTok linklarini yuklab, faylni chatga qaytaradi.
 - `1secmail` - temporary email yaratish, inbox ko'rish, message ID bilan xabar o'qish.
   - Agar 1secmail bloklansa, bot avtomatik `mail.tm` ga fallback qiladi.
 - `TinyURL` - uzun URL ni qisqartirish (`TINYURL_API_TOKEN` bo'lsa official API, bo'lmasa legacy free endpoint).
@@ -14,7 +14,7 @@ Telegram bot faqat **free API** servislar bilan ishlaydi.
   - `en`
   - `ru`
   - `zh`
-- `YouTube` - qidiruv, link bo'yicha yuklash, video sifati tanlash va audio saqlash.
+- `YouTube` - qidiruv, link bo'yicha yuklash, video sifati tanlash va audio saqlash. Instagram/TikTok direct video linklari ham shu bo'limda yuklanadi.
 - `Wikipedia` - maqola summary qidirish.
 - `Rasm yaratish` - prompt asosida rasm yaratadi.
 - `Sun'iy Intellekt` - Free / Premium / Pro planli AI chat, kredit dashboard, smart routing, plan/model selector va yashirin Telegram kanal arxivi.

@@ -89,6 +89,10 @@ def _fmt_service_name(key: str) -> str:
         "pollinations": "Rasm yaratish",
         "download:direct": "Direct yuklash",
         "download:youtube": "YouTube yuklash",
+        "download:youtube_video": "YouTube video yuklash",
+        "download:youtube_audio": "YouTube audio yuklash",
+        "download:instagram_video": "Instagram video yuklash",
+        "download:tiktok_video": "TikTok video yuklash",
     }
     return mapping.get(key, key.replace("_", " ").title())
 

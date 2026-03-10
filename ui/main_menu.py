@@ -83,6 +83,9 @@ def _section_rows(section: MenuSection) -> list[list[InlineKeyboardButton]]:
             [
                 InlineKeyboardButton(
                     text="💾 Fayllarni saqlash", callback_data="services:save"
+                ),
+                InlineKeyboardButton(
+                    text="🖼 Instagram/TikTok Saver", callback_data="services:save"
                 )
             ],
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="menu:main")],
@@ -200,7 +203,8 @@ def section_menu_text(
             "Media va yuklab olish xizmatlari shu yerda.\n\n"
             "🎥 YouTube video/audio\n"
             "🎵 Musiqa qidirish\n"
-            "💾 Fayllarni saqlash"
+            "💾 Fayllarni saqlash\n"
+            "🖼 Instagram/TikTok saver"
         )
     if section == "tools":
         return (

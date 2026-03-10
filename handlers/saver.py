@@ -18,6 +18,11 @@ from aiogram.types.input_file import FSInputFile
 from aiogram.utils.chat_action import ChatActionSender
 
 from services.analytics_store import AnalyticsStore
+from services.social_client import (
+    download_social_video,
+    is_social_video_url,
+    social_platform_name,
+)
 from services.saver_client import (
     DownloadedFile,
     cleanup_download,
@@ -54,11 +59,14 @@ def save_prompt_text() -> str:
     limit_text = _format_bytes(saver_limit_bytes())
     return (
         "<b>Saqlash</b>\n"
-        "Direct fayl linki yoki YouTube link yuboring. Bot uni yuklab, shu chatga qaytaradi.\n\n"
+        "Direct fayl linki, YouTube, Instagram yoki TikTok link yuboring. "
+        "Bot uni yuklab, shu chatga qaytaradi.\n\n"
         f"Maksimal hajm: <b>{limit_text}</b>\n"
         "Misol:\n"
         "<code>https://example.com/file.pdf</code>\n"
-        "<code>https://youtu.be/dQw4w9WgXcQ</code>"
+        "<code>https://youtu.be/dQw4w9WgXcQ</code>\n"
+        "<code>https://www.instagram.com/reel/...</code>\n"
+        "<code>https://www.tiktok.com/@user/video/...</code>"
     )
 
 
@@ -192,6 +200,20 @@ def _public_youtube_save_error(error: Exception) -> str:
     return "YouTube linkini yuklab bo'lmadi. Boshqa linkni sinab ko'ring."
 
 
+def _public_social_save_error(error: Exception) -> str:
+    message = str(error or "").strip()
+    lowered = message.lower()
+    if isinstance(error, ValueError) and message:
+        return message
+    if "private" in lowered or "login" in lowered or "sign in" in lowered:
+        return "Private yoki cheklangan video yuborildi. Public link yuboring."
+    if "video topilmadi" in lowered:
+        return "Videoni topib bo'lmadi. Reel yoki TikTok video link yuboring."
+    if "limit" in lowered or "katta" in lowered:
+        return "Fayl limitdan katta."
+    return "Instagram yoki TikTok videoni yuklab bo'lmadi. Public video link yuboring."
+
+
 async def download_and_send_url(
     message: Message,
     url: str,
@@ -299,6 +321,59 @@ async def download_and_send_youtube(
         await cleanup_download(downloaded)
 
 
+async def download_and_send_social(
+    message: Message,
+    url: str,
+    *,
+    title: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> DownloadedFile:
+    platform = social_platform_name(url)
+    progress_message = await message.answer(
+        f"<b>{html.escape(platform)} yuklanmoqda...</b>\nBiroz kuting.",
+        parse_mode="HTML",
+    )
+    downloaded: DownloadedFile | None = None
+    succeeded = False
+    try:
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            downloaded = await download_social_video(
+                url,
+                max_bytes=saver_limit_bytes(),
+            )
+        with contextlib.suppress(TelegramBadRequest):
+            await progress_message.edit_text(
+                "<b>Yuborilmoqda...</b>",
+                parse_mode="HTML",
+            )
+        async with ChatActionSender.upload_document(
+            bot=message.bot,
+            chat_id=message.chat.id,
+        ):
+            await send_downloaded_file(
+                message,
+                downloaded,
+                title=title,
+                reply_markup=reply_markup,
+            )
+        succeeded = True
+        return downloaded
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Saver social xatosi: %s", error)
+        with contextlib.suppress(TelegramBadRequest):
+            await progress_message.edit_text(
+                f"<b>Social video xatosi</b>\n{html.escape(_public_social_save_error(error))}",
+                parse_mode="HTML",
+                reply_markup=reply_markup or save_keyboard(),
+            )
+        raise
+    finally:
+        if succeeded:
+            with contextlib.suppress(TelegramBadRequest):
+                await progress_message.delete()
+        await cleanup_download(downloaded)
+
+
 @router.callback_query(F.data == "services:save")
 async def save_entry_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -338,11 +413,40 @@ async def save_url_handler(
         )
         await state.update_data(save_youtube_url=candidate_url)
         return
+    if candidate_url and is_social_video_url(candidate_url):
+        platform = social_platform_name(candidate_url)
+        try:
+            downloaded = await download_and_send_social(
+                message,
+                candidate_url,
+                title=f"Saqlash / {platform}",
+                reply_markup=save_result_keyboard(),
+            )
+        except Exception:
+            return
+
+        if message.from_user is not None:
+            await analytics_store.record_download(
+                user_id=int(message.from_user.id),
+                username=str(message.from_user.username or "").strip(),
+                full_name=" ".join(
+                    part
+                    for part in [
+                        str(message.from_user.first_name or "").strip(),
+                        str(message.from_user.last_name or "").strip(),
+                    ]
+                    if part
+                ).strip(),
+                source=downloaded.source,
+                size=downloaded.size,
+            )
+        await state.set_state(SaverState.waiting_url)
+        return
 
     try:
         downloaded = await download_and_send_url(
             message,
-            text,
+            candidate_url or text,
             title="Saqlash",
             reply_markup=save_result_keyboard(),
         )

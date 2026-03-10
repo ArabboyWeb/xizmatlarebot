@@ -18,7 +18,18 @@ from aiogram.utils.chat_action import ChatActionSender
 
 from handlers.saver import send_downloaded_file
 from services.analytics_store import AnalyticsStore
-from services.saver_client import DownloadedFile, cleanup_download, saver_limit_bytes
+from services.saver_client import (
+    DownloadedFile,
+    cleanup_download,
+    extract_first_url,
+    is_youtube_url,
+    saver_limit_bytes,
+)
+from services.social_client import (
+    download_social_video,
+    is_social_video_url,
+    social_platform_name,
+)
 from services.youtube_client import AUDIO_BITRATES, VIDEO_QUALITIES, download_youtube, search_youtube
 
 router = Router(name="youtube_search")
@@ -162,13 +173,15 @@ def _prompt_text(mode: str, quality: str, audio_bitrate: str) -> str:
     else:
         settings_text = f"Rejim: <b>Video</b>\nSifat: <b>{quality.upper() if quality != 'best' else 'AUTO'}</b>"
     return (
-        "<b>YouTube</b>\n"
-        "YouTube link yoki qidiruv matni yuboring.\n"
-        "Bot natijani topadi va tanlangan formatda yuklab beradi.\n\n"
+        "<b>YouTube / Video Saver</b>\n"
+        "YouTube qidiruv matni yoki YouTube, Instagram, TikTok link yuboring.\n"
+        "YouTube uchun qidiruv ishlaydi, Instagram/TikTok uchun direct link bilan yuklaydi.\n\n"
         f"{settings_text}\n\n"
         "Misollar:\n"
         "<code>lofi hip hop mix</code>\n"
-        "<code>https://youtu.be/dQw4w9WgXcQ</code>"
+        "<code>https://youtu.be/dQw4w9WgXcQ</code>\n"
+        "<code>https://www.instagram.com/reel/...</code>\n"
+        "<code>https://www.tiktok.com/@user/video/...</code>"
     )
 
 
@@ -280,6 +293,20 @@ def _public_youtube_error(error: Exception, *, action: str) -> str:
     return "YouTube yuklab bo'lmadi. Boshqa link yoki sifatni sinab ko'ring."
 
 
+def _public_social_error(error: Exception) -> str:
+    message = str(error or "").strip()
+    lowered = message.lower()
+    if isinstance(error, ValueError) and message:
+        return message
+    if "private" in lowered or "login" in lowered or "sign in" in lowered:
+        return "Private yoki cheklangan video yuborildi. Public link yuboring."
+    if "video topilmadi" in lowered:
+        return "Videoni topib bo'lmadi. Reel yoki TikTok video link yuboring."
+    if "limit" in lowered or "katta" in lowered:
+        return "Tanlangan fayl limitdan katta."
+    return "Instagram yoki TikTok videoni yuklab bo'lmadi. Public video link yuboring."
+
+
 async def _download_and_send_youtube(
     message: Message,
     url: str,
@@ -327,6 +354,59 @@ async def _download_and_send_youtube(
         with contextlib.suppress(TelegramBadRequest):
             await progress_message.edit_text(
                 f"<b>YouTube xatosi</b>\n{html.escape(_public_youtube_error(error, action='download'))}",
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+        raise
+    finally:
+        if succeeded:
+            with contextlib.suppress(TelegramBadRequest):
+                await progress_message.delete()
+        await cleanup_download(downloaded)
+
+
+async def _download_and_send_social(
+    message: Message,
+    url: str,
+    *,
+    title: str,
+    reply_markup: InlineKeyboardMarkup,
+) -> DownloadedFile:
+    platform = social_platform_name(url)
+    progress_message = await message.answer(
+        f"<b>{html.escape(platform)} yuklanmoqda...</b>\nBiroz kuting.",
+        parse_mode="HTML",
+    )
+    downloaded: DownloadedFile | None = None
+    succeeded = False
+    try:
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            downloaded = await download_social_video(
+                url,
+                max_bytes=saver_limit_bytes(),
+            )
+        with contextlib.suppress(TelegramBadRequest):
+            await progress_message.edit_text(
+                "<b>Yuborilmoqda...</b>",
+                parse_mode="HTML",
+            )
+        async with ChatActionSender.upload_document(
+            bot=message.bot,
+            chat_id=message.chat.id,
+        ):
+            await send_downloaded_file(
+                message,
+                downloaded,
+                title=title,
+                reply_markup=reply_markup,
+            )
+        succeeded = True
+        return downloaded
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Social video yuklash xatosi: %s", error)
+        with contextlib.suppress(TelegramBadRequest):
+            await progress_message.edit_text(
+                f"<b>Social video xatosi</b>\n{html.escape(_public_social_error(error))}",
                 parse_mode="HTML",
                 reply_markup=reply_markup,
             )
@@ -403,16 +483,51 @@ async def youtube_input_handler(
         return
 
     mode, quality, audio_bitrate = _settings(await state.get_data())
+    try:
+        candidate_url = extract_first_url(text)
+    except ValueError:
+        candidate_url = ""
 
-    if "youtube.com/" in text.lower() or "youtu.be/" in text.lower():
+    if candidate_url and is_youtube_url(candidate_url):
         try:
             downloaded = await _download_and_send_youtube(
                 message,
-                text,
+                candidate_url,
                 mode=mode,
                 quality=quality,
                 audio_bitrate=audio_bitrate,
                 title="YouTube",
+                reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
+            )
+        except Exception:
+            return
+
+        if message.from_user is not None:
+            await _record_download(
+                analytics_store,
+                callback_or_message_user=message.from_user,
+                source=downloaded.source,
+                size=downloaded.size,
+            )
+        await state.set_state(YoutubeState.waiting_input)
+        return
+    if candidate_url and is_social_video_url(candidate_url):
+        if mode != "video":
+            await message.answer(
+                (
+                    "<b>Instagram/TikTok faqat video rejimida ishlaydi.</b>\n"
+                    "Iltimos, rejimni `Video` ga qaytaring."
+                ),
+                parse_mode="HTML",
+                reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
+            )
+            return
+        platform = social_platform_name(candidate_url)
+        try:
+            downloaded = await _download_and_send_social(
+                message,
+                candidate_url,
+                title=platform,
                 reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
             )
         except Exception:
@@ -532,6 +647,6 @@ async def youtube_download_callback(
 async def youtube_fallback(message: Message, state: FSMContext) -> None:
     mode, quality, audio_bitrate = _settings(await state.get_data())
     await message.answer(
-        "YouTube link yoki qidiruv matni yuboring.",
+        "YouTube qidiruv matni yoki YouTube, Instagram, TikTok link yuboring.",
         reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
     )

@@ -13,6 +13,7 @@ __all__ = [
     "rapidapi_shazam_client",
     "rapidapi_translate_client",
     "shazam_client",
+    "social_client",
     "saver_client",
     "tempmail_client",
     "tinyurl_client",
