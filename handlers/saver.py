@@ -311,9 +311,9 @@ def _public_youtube_save_error(error: Exception) -> str:
     if "playlist" in lowered:
         return "Playlist emas, bitta video link yuboring."
     if "audio" in lowered and "topilmadi" in lowered:
-        return "Audio formati topilmadi."
+        return "Audio format topilmadi."
     if "video" in lowered and "topilmadi" in lowered:
-        return "Tanlangan video sifati topilmadi."
+        return "Video format topilmadi."
     if "limit" in lowered or "katta" in lowered:
         return "Fayl limitdan katta."
     return "YouTube linkini yuklab bo'lmadi. Boshqa linkni sinab ko'ring."

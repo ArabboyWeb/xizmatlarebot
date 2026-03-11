@@ -70,6 +70,7 @@ def youtube_keyboard(
     *,
     has_results: bool = False,
 ) -> InlineKeyboardMarkup:
+    _ = quality, audio_bitrate
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(
@@ -82,52 +83,6 @@ def youtube_keyboard(
             ),
         ]
     ]
-    if mode == "video":
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=_quality_label(quality, "best", "Auto"),
-                    callback_data="youtube:quality:best",
-                ),
-                InlineKeyboardButton(
-                    text=_quality_label(quality, "1080", "1080p"),
-                    callback_data="youtube:quality:1080",
-                ),
-                InlineKeyboardButton(
-                    text=_quality_label(quality, "720", "720p"),
-                    callback_data="youtube:quality:720",
-                ),
-            ]
-        )
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=_quality_label(quality, "480", "480p"),
-                    callback_data="youtube:quality:480",
-                ),
-                InlineKeyboardButton(
-                    text=_quality_label(quality, "360", "360p"),
-                    callback_data="youtube:quality:360",
-                ),
-            ]
-        )
-    else:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=_quality_label(audio_bitrate, "128", "128k"),
-                    callback_data="youtube:bitrate:128",
-                ),
-                InlineKeyboardButton(
-                    text=_quality_label(audio_bitrate, "192", "192k"),
-                    callback_data="youtube:bitrate:192",
-                ),
-                InlineKeyboardButton(
-                    text=_quality_label(audio_bitrate, "256", "256k"),
-                    callback_data="youtube:bitrate:256",
-                ),
-            ]
-        )
     if has_results:
         rows.append(
             [InlineKeyboardButton(text="Natijalarni tozalash", callback_data="youtube:clear")]
@@ -170,14 +125,13 @@ def youtube_results_keyboard(
 
 
 def _prompt_text(mode: str, quality: str, audio_bitrate: str) -> str:
-    if mode == "audio":
-        settings_text = f"Rejim: <b>Audio</b>\nBitrate: <b>{audio_bitrate}k</b>"
-    else:
-        settings_text = f"Rejim: <b>Video</b>\nSifat: <b>{quality.upper() if quality != 'best' else 'AUTO'}</b>"
+    _ = quality, audio_bitrate
+    settings_text = f"YouTube rejimi: <b>{'Audio' if mode == 'audio' else 'Video'}</b>"
     return (
         "<b>YouTube / Instagram / TikTok Saver</b>\n"
         "YouTube qidiruv matni yoki YouTube, Instagram, TikTok link yuboring.\n"
-        "YouTube uchun qidiruv ishlaydi, Instagram/TikTok uchun direct link bilan yuklaydi.\n"
+        "YouTube uchun qidiruv ishlaydi, link yuborsangiz tanlangan rejim bo'yicha yuklaydi.\n"
+        "Instagram/TikTok linklari sifat tanlovisiz to'g'ridan-to'g'ri video qilib yuklanadi.\n"
         "Free foydalanuvchi direct link bilan har refill siklida 1 marta tekin yuklay oladi.\n\n"
         f"{settings_text}\n\n"
         "Misollar:\n"
@@ -196,11 +150,8 @@ def _build_results_text(
     quality: str,
     audio_bitrate: str,
 ) -> str:
-    settings_line = (
-        f"Format: <b>AUDIO {audio_bitrate}k</b>"
-        if mode == "audio"
-        else f"Format: <b>VIDEO {quality.upper() if quality != 'best' else 'AUTO'}</b>"
-    )
+    _ = quality, audio_bitrate
+    settings_line = f"Rejim: <b>{'AUDIO' if mode == 'audio' else 'VIDEO'}</b>"
     rows = [
         "<b>YouTube natijalari</b>",
         f"So'rov: <code>{html.escape(query)}</code>",
@@ -286,9 +237,9 @@ def _public_youtube_error(error: Exception, *, action: str) -> str:
     if "playlist" in lowered:
         return "Playlist emas, bitta video link yuboring."
     if "audio" in lowered and "topilmadi" in lowered:
-        return "Tanlangan audio sifati topilmadi. Boshqa bitrate tanlang."
+        return "Audio format topilmadi."
     if "video" in lowered and "topilmadi" in lowered:
-        return "Tanlangan video sifati topilmadi. Boshqa sifat tanlang."
+        return "Video format topilmadi."
     if "limit" in lowered or "katta" in lowered:
         return "Tanlangan fayl limitdan katta."
     if action == "search":
@@ -537,21 +488,15 @@ async def youtube_input_handler(
         return
     if candidate_url and is_social_video_url(candidate_url):
         if mode != "video":
-            await message.answer(
-                (
-                    "<b>Instagram/TikTok faqat video rejimida ishlaydi.</b>\n"
-                    "Iltimos, rejimni `Video` ga qaytaring."
-                ),
-                parse_mode="HTML",
-                reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
-            )
-            return
+            mode = "video"
+            await state.update_data(youtube_mode=mode)
         platform = social_platform_name(candidate_url)
+        keyboard = youtube_keyboard(mode, quality, audio_bitrate)
         charge = await ensure_balance(
             ai_store,
             message,
             "social_download",
-            reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
+            reply_markup=keyboard,
         )
         if charge is None:
             return
@@ -561,7 +506,7 @@ async def youtube_input_handler(
                 message,
                 candidate_url,
                 title=platform,
-                reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
+                reply_markup=keyboard,
             )
         except Exception:
             return
@@ -731,6 +676,6 @@ async def youtube_download_callback(
 async def youtube_fallback(message: Message, state: FSMContext) -> None:
     mode, quality, audio_bitrate = _settings(await state.get_data())
     await message.answer(
-        "YouTube qidiruv matni yoki YouTube, Instagram, TikTok link yuboring.",
+        "YouTube qidiruv matni yoki YouTube, Instagram, TikTok link yuboring. YouTube uchun Video/Audio rejimi ishlaydi.",
         reply_markup=youtube_keyboard(mode, quality, audio_bitrate),
     )
