@@ -297,7 +297,12 @@ def _convert_video_to_mp4_sync(
         "-sn",
         "-dn",
         "-vf",
-        "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+        (
+            "scale="
+            "'if(gt(iw,ih),min(1280,iw),-2)':"
+            "'if(gt(iw,ih),-2,min(1280,ih))',"
+            "setsar=1,format=yuv420p"
+        ),
         "-fps_mode",
         "cfr",
         "-r",
@@ -311,13 +316,17 @@ def _convert_video_to_mp4_sync(
         "-tag:v",
         "avc1",
         "-profile:v",
-        "main",
+        "baseline",
         "-level",
-        "4.0",
+        "3.1",
         "-preset",
         "veryfast",
         "-crf",
         "23",
+        "-maxrate",
+        "2500k",
+        "-bufsize",
+        "5000k",
         "-g",
         "60",
         "-keyint_min",
