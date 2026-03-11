@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import mimetypes
 import shutil
 import subprocess
@@ -45,6 +46,20 @@ TIKTOK_HOSTS = {
 }
 TIKWM_API_URL = "https://www.tikwm.com/api/"
 HTTP_TIMEOUT_SECONDS = 40
+YTDLP_TIKTOK_TIMEOUT_SECONDS = 15
+logger = logging.getLogger(__name__)
+
+
+class _YTDLPLogger:
+    def debug(self, message: str) -> None:
+        if str(message or "").startswith("[debug]"):
+            logger.debug("yt-dlp: %s", message)
+
+    def warning(self, message: str) -> None:
+        logger.warning("yt-dlp: %s", message)
+
+    def error(self, message: str) -> None:
+        logger.warning("yt-dlp error: %s", message)
 
 
 def _host_matches(hostname: str, hosts: set[str]) -> bool:
@@ -72,7 +87,7 @@ def social_platform_name(url: str) -> str:
     return "Social video"
 
 
-def _ydl_base_options() -> dict[str, Any]:
+def _ydl_base_options(*, socket_timeout: int = 40) -> dict[str, Any]:
     return {
         "quiet": True,
         "no_warnings": True,
@@ -81,10 +96,11 @@ def _ydl_base_options() -> dict[str, Any]:
         "restrictfilenames": True,
         "windowsfilenames": True,
         "cachedir": False,
-        "socket_timeout": 40,
+        "socket_timeout": max(5, int(socket_timeout)),
         "skip_download": True,
         "retries": 2,
         "fragment_retries": 2,
+        "logger": _YTDLPLogger(),
     }
 
 
@@ -182,7 +198,12 @@ def _convert_video_to_mp4(path: Path, *, ffmpeg_location: str) -> Path:
     return target
 
 
-def _download_social_video_sync(url: str, *, max_bytes: int) -> DownloadedFile:
+def _download_social_video_sync(
+    url: str,
+    *,
+    max_bytes: int,
+    socket_timeout: int = 40,
+) -> DownloadedFile:
     if yt_dlp is None:
         raise RuntimeError("Social video yuklash moduli o'rnatilmagan.")
     if not is_social_video_url(url):
@@ -192,7 +213,7 @@ def _download_social_video_sync(url: str, *, max_bytes: int) -> DownloadedFile:
     target_dir = _target_dir()
     try:
         ffmpeg_location = _ffmpeg_location()
-        options = _ydl_base_options()
+        options = _ydl_base_options(socket_timeout=socket_timeout)
         options.update(
             {
                 "skip_download": False,
@@ -300,7 +321,11 @@ async def _fetch_tikwm_payload(url: str) -> dict[str, Any]:
                     raise RuntimeError("TikTok fallback javobi noto'g'ri.") from error
         if not isinstance(payload, dict):
             raise RuntimeError("TikTok fallback javobi noto'g'ri.")
-        code = int(payload.get("code", -1) or -1)
+        raw_code = payload.get("code", -1)
+        try:
+            code = int(raw_code)
+        except (TypeError, ValueError):
+            code = -1
         if code == 0:
             data = payload.get("data")
             if not isinstance(data, dict):
@@ -315,26 +340,52 @@ async def _fetch_tikwm_payload(url: str) -> dict[str, Any]:
 
 
 async def _download_tiktok_via_tikwm(url: str, *, max_bytes: int) -> DownloadedFile:
-    downloaded: DownloadedFile | None = None
-    try:
-        data = await _fetch_tikwm_payload(url)
-        media_url = (
-            str(data.get("hdplay", "")).strip()
-            or str(data.get("play", "")).strip()
-            or str(data.get("wmplay", "")).strip()
-        )
+    data = await _fetch_tikwm_payload(url)
+    title = (
+        str(data.get("title", "")).strip()
+        or str(data.get("id", "")).strip()
+        or "TikTok video"
+    )
+    candidates: list[tuple[str, int]] = []
+    for key, size_key in (
+        ("hdplay", "hd_size"),
+        ("play", "size"),
+        ("wmplay", "wm_size"),
+    ):
+        media_url = str(data.get(key, "")).strip()
         if not media_url:
-            raise RuntimeError("TikTok video linki topilmadi.")
-        downloaded = await download_direct_url(media_url, max_bytes)
-        title = str(data.get("title", "")).strip() or str(data.get("id", "")).strip() or downloaded.path.stem
-        return _retag_download(
-            downloaded,
-            title=title,
-            source="tiktok_video",
-        )
-    except Exception:
-        await cleanup_download(downloaded)
-        raise
+            continue
+        try:
+            media_size = int(data.get(size_key, 0) or 0)
+        except (TypeError, ValueError):
+            media_size = 0
+        if media_size > 0 and media_size > max_bytes:
+            continue
+        if media_url not in {item[0] for item in candidates}:
+            candidates.append((media_url, media_size))
+    if not candidates:
+        raise RuntimeError("TikTok video linki topilmadi.")
+
+    last_error: Exception | None = None
+    for media_url, _media_size in candidates:
+        downloaded: DownloadedFile | None = None
+        try:
+            downloaded = await download_direct_url(
+                media_url,
+                max_bytes,
+                timeout_seconds=15,
+            )
+            return _retag_download(
+                downloaded,
+                title=title,
+                source="tiktok_video",
+            )
+        except Exception as error:  # noqa: BLE001
+            last_error = error
+            await cleanup_download(downloaded)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("TikTok video linki topilmadi.")
 
 
 async def download_social_video(
@@ -357,6 +408,7 @@ async def download_social_video(
                     _download_social_video_sync,
                     url,
                     max_bytes=limit,
+                    socket_timeout=YTDLP_TIKTOK_TIMEOUT_SECONDS,
                 )
             except Exception as ytdlp_error:
                 lowered = " ".join(
@@ -369,6 +421,10 @@ async def download_social_video(
                     raise RuntimeError("Fayl limitdan katta.")
                 if "private" in lowered or "login" in lowered or "sign in" in lowered:
                     raise RuntimeError("Private yoki cheklangan video yuborildi.")
+                if "timeout" in lowered or "handshake" in lowered or "ssl" in lowered:
+                    raise RuntimeError(
+                        "TikTok CDN javob bermadi. Birozdan keyin qayta urinib ko'ring."
+                    ) from ytdlp_error
                 raise RuntimeError(
                     "TikTok videoni yuklab bo'lmadi. Public video link yuboring."
                 ) from ytdlp_error

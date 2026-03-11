@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import mimetypes
 import shutil
 import subprocess
@@ -28,6 +29,19 @@ from services.saver_client import (
 
 VIDEO_QUALITIES = ("best", "1080", "720", "480", "360")
 AUDIO_BITRATES = ("128", "192", "256")
+logger = logging.getLogger(__name__)
+
+
+class _YTDLPLogger:
+    def debug(self, message: str) -> None:
+        if str(message or "").startswith("[debug]"):
+            logger.debug("yt-dlp: %s", message)
+
+    def warning(self, message: str) -> None:
+        logger.warning("yt-dlp: %s", message)
+
+    def error(self, message: str) -> None:
+        logger.warning("yt-dlp error: %s", message)
 
 
 def _ydl_base_options() -> dict[str, Any]:
@@ -43,6 +57,7 @@ def _ydl_base_options() -> dict[str, Any]:
         "skip_download": True,
         "retries": 2,
         "fragment_retries": 2,
+        "logger": _YTDLPLogger(),
     }
 
 

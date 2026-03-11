@@ -122,9 +122,18 @@ async def cleanup_download(downloaded: DownloadedFile | None) -> None:
         shutil.rmtree(downloaded.path.parent, ignore_errors=True)
 
 
-async def download_direct_url(url: str, max_bytes: int) -> DownloadedFile:
+async def download_direct_url(
+    url: str,
+    max_bytes: int,
+    *,
+    timeout_seconds: int | None = None,
+) -> DownloadedFile:
     target_dir = _target_dir()
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+    timeout = aiohttp.ClientTimeout(
+        total=max(5, int(timeout_seconds))
+        if isinstance(timeout_seconds, int) and timeout_seconds > 0
+        else HTTP_TIMEOUT_SECONDS
+    )
     headers = {
         "Accept": "*/*",
         "User-Agent": os.getenv("HTTP_USER_AGENT", "").strip() or DEFAULT_USER_AGENT,

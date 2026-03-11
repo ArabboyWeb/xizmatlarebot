@@ -626,7 +626,7 @@ async def youtube_input_handler(
     )
     await finalize_charge(
         ai_store,
-        service_key=service_key,
+        service_key="youtube_search",
         user_id=user_id,
         username=username,
         full_name=full_name,
@@ -709,7 +709,9 @@ async def youtube_download_callback(
         )
     except Exception:
         return
-    await ai_store.charge_tokens(
+    await finalize_charge(
+        ai_store,
+        service_key=service_key,
         user_id=user_id,
         username=username,
         full_name=full_name,
