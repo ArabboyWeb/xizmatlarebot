@@ -16,6 +16,7 @@ from aiogram.types import (
 from aiogram.utils.chat_action import ChatActionSender
 
 from services.ai_store import AIStore
+from services.group_command_mode import is_group_chat
 from services.token_billing import ensure_balance
 from services.tempmail_client import (
     TempMailMessagePreview,
@@ -142,16 +143,88 @@ async def tempmail_entry_handler(callback: CallbackQuery, state: FSMContext) -> 
 
 @router.message(Command("tempmail"))
 @router.message(Command("mail"))
-async def tempmail_command_handler(message: Message, state: FSMContext) -> None:
-    await state.clear()
+async def tempmail_command_handler(
+    message: Message,
+    state: FSMContext,
+    ai_store: AIStore,
+) -> None:
+    if not is_group_chat(message):
+        await state.clear()
+        await message.answer(
+            (
+                "<b>1secmail (Temporary Email)</b>\n"
+                "Free disposable email yarating va inboxni bot ichida tekshiring.\n"
+                "Boshlash uchun <b>Yangi email</b> tugmasini bosing."
+            ),
+            parse_mode="HTML",
+            reply_markup=tempmail_keyboard(),
+        )
+        return
+
+    data = await state.get_data()
+    existing_mailbox = str(data.get(TEMPMAIL_EMAIL_KEY, "")).strip().lower()
+    service_key = "tempmail_inbox" if existing_mailbox else "tempmail_new"
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        service_key,
+        reply_markup=tempmail_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
+    try:
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            if existing_mailbox:
+                mailbox = existing_mailbox
+                messages = await fetch_inbox(mailbox)
+                text = _build_inbox_text(mailbox, messages)
+            else:
+                mailbox = await create_mailbox()
+                await state.update_data(tempmail_email=mailbox)
+                text = (
+                    "<b>Yangi mailbox tayyor</b>\n"
+                    f"<code>{html.escape(mailbox)}</code>\n\n"
+                    "Inboxni ko'rish uchun yana <code>/mail</code> yuboring.\n"
+                    "Xabar ID o'qish uchun <code>/mailread</code> yuboring."
+                )
+    except Exception as error:  # noqa: BLE001
+        await message.answer(
+            f"<b>1secmail xatosi</b>\n{html.escape(str(error))}",
+            parse_mode="HTML",
+        )
+        return
+    await message.answer(
+        text,
+        parse_mode="HTML",
+    )
+    await ai_store.charge_tokens(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        amount=cost,
+    )
+
+
+@router.message(Command("mailread"))
+async def tempmail_read_command_handler(message: Message, state: FSMContext) -> None:
+    try:
+        mailbox = await _ensure_mailbox(state)
+    except Exception as error:  # noqa: BLE001
+        await message.answer(
+            f"<b>Mailbox xatosi</b>\n{html.escape(str(error))}",
+            parse_mode="HTML",
+        )
+        return
+    await state.set_state(TempMailState.waiting_message_id)
     await message.answer(
         (
-            "<b>1secmail (Temporary Email)</b>\n"
-            "Free disposable email yarating va inboxni bot ichida tekshiring.\n"
-            "Boshlash uchun <b>Yangi email</b> tugmasini bosing."
+            "<b>Xabar ID kiriting</b>\n"
+            f"Joriy email: <code>{html.escape(mailbox)}</code>\n"
+            "Masalan: <code>123456789</code>"
         ),
         parse_mode="HTML",
-        reply_markup=tempmail_keyboard(),
+        reply_markup=read_keyboard(),
     )
 
 

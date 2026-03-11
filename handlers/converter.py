@@ -434,12 +434,91 @@ async def converter_command_handler(message: Message, state: FSMContext) -> None
     await message.answer(
         (
             "<b>Converter</b>\n"
-            "PDF, Word va rasm fayllarni professional konvertatsiya qiling.\n"
-            "Kerakli bo'limni tanlang:"
+            "Group command mode uchun sub-buyruqlar:\n"
+            "<code>/word2pdf</code>\n"
+            "<code>/pdf2word</code>\n"
+            "<code>/img2pdf</code>\n"
+            "<code>/pdf2img</code>\n"
+            "<code>/imgpng</code> / <code>/imgjpg</code> / <code>/imgwebp</code>"
         ),
         parse_mode="HTML",
         reply_markup=converter_menu_keyboard(),
     )
+
+
+@router.message(Command("word2pdf"))
+async def word_to_pdf_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(ConverterState.waiting_word_to_pdf)
+    await message.answer(
+        "<b>Word -> PDF</b>\nDOC/DOCX/ODT/RTF fayl yuboring.",
+        parse_mode="HTML",
+        reply_markup=back_keyboard(),
+    )
+
+
+@router.message(Command("pdf2word"))
+async def pdf_to_word_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(ConverterState.waiting_pdf_to_word)
+    await message.answer(
+        "<b>PDF -> Word</b>\nPDF fayl yuboring.",
+        parse_mode="HTML",
+        reply_markup=back_keyboard(),
+    )
+
+
+@router.message(Command("img2pdf"))
+async def image_to_pdf_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(ConverterState.waiting_image_to_pdf)
+    await message.answer(
+        "<b>Image -> PDF</b>\nRasm yuboring (photo yoki image document).",
+        parse_mode="HTML",
+        reply_markup=back_keyboard(),
+    )
+
+
+@router.message(Command("pdf2img"))
+async def pdf_to_images_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(ConverterState.waiting_pdf_to_images)
+    await message.answer(
+        f"<b>PDF -> Images</b>\nPDF yuboring (maksimal {MAX_PDF_PAGES} sahifa).",
+        parse_mode="HTML",
+        reply_markup=back_keyboard(),
+    )
+
+
+async def _set_image_format_command(
+    message: Message,
+    state: FSMContext,
+    *,
+    target: str,
+) -> None:
+    await state.clear()
+    await state.set_state(ConverterState.waiting_image_format)
+    await state.update_data(image_target=target)
+    await message.answer(
+        f"<b>Image -> {target.upper()}</b>\nRasm yuboring (photo yoki image document).",
+        parse_mode="HTML",
+        reply_markup=back_keyboard(),
+    )
+
+
+@router.message(Command("imgpng"))
+async def image_png_command_handler(message: Message, state: FSMContext) -> None:
+    await _set_image_format_command(message, state, target="png")
+
+
+@router.message(Command("imgjpg"))
+async def image_jpg_command_handler(message: Message, state: FSMContext) -> None:
+    await _set_image_format_command(message, state, target="jpg")
+
+
+@router.message(Command("imgwebp"))
+async def image_webp_command_handler(message: Message, state: FSMContext) -> None:
+    await _set_image_format_command(message, state, target="webp")
 
 
 @router.callback_query(F.data == "converter:word_to_pdf")

@@ -16,6 +16,7 @@ from aiogram.types import (
 from aiogram.types.input_file import BufferedInputFile
 from aiogram.utils.chat_action import ChatActionSender
 
+from services.ai_channel_logger import log_image_generation
 from services.ai_store import AIStore
 from services.pollinations_client import generate_image
 from services.token_billing import ensure_balance
@@ -290,6 +291,22 @@ async def pollinations_prompt_handler(
         full_name=full_name,
         amount=cost,
     )
+    try:
+        await log_image_generation(
+            message.bot,
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            prompt_text=prompt,
+            model=model,
+            width=size[0],
+            height=size[1],
+            seed=seed,
+            image_bytes=image,
+            file_name=file_name,
+        )
+    except Exception:
+        pass
     await state.set_state(PollinationsState.waiting_prompt)
 
 

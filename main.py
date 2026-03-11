@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from urllib.parse import urlparse
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
@@ -29,6 +30,7 @@ from handlers.wikipedia import router as wikipedia_router
 from handlers.youtube_search import router as youtube_search_router
 from services.ai_store import AIContextMiddleware, AIStore
 from services.analytics_store import AnalyticsMiddleware, AnalyticsStore
+from services.group_command_mode import command_menu_text, install_group_command_mode, is_group_chat
 from services.token_pricing import (
     free_reset_hours,
     free_reset_tokens,
@@ -70,13 +72,27 @@ def _mb_to_bytes(value: int) -> int:
     return max(1, value) * 1024 * 1024
 
 
+def _normalize_bot_username(raw: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    if value.startswith("https://") or value.startswith("http://"):
+        parsed = urlparse(value)
+        tail = parsed.path.rsplit("/", 1)[-1].strip()
+        value = tail
+    elif "t.me/" in value:
+        value = value.rsplit("/", 1)[-1].strip()
+    value = value.split("?", 1)[0].strip().lstrip("@")
+    return value
+
+
 def register_core_handlers(
     dispatcher: Dispatcher,
     upload_limit_bytes: int,
     download_limit_bytes: int,
 ) -> None:
     def _referral_link(user_id: int) -> str:
-        bot_username = os.getenv("BOT_USERNAME", "").strip().lstrip("@")
+        bot_username = _normalize_bot_username(os.getenv("BOT_USERNAME", ""))
         if bot_username:
             return f"https://t.me/{bot_username}?start=ref_{user_id}"
         return f"ref_{user_id}"
@@ -152,6 +168,12 @@ def register_core_handlers(
         notice: str = "",
     ) -> None:
         is_admin = is_admin_user_id(message.from_user.id if message.from_user else None)
+        if is_group_chat(message):
+            text = command_menu_text(is_admin=is_admin)
+            if notice:
+                text = f"{text}\n\n{notice}"
+            await message.answer(text, parse_mode="HTML")
+            return
         profile = await _menu_profile(ai_store, message.from_user)
         await message.answer(
             main_menu_text(
@@ -173,6 +195,18 @@ def register_core_handlers(
         *,
         ai_store: AIStore,
     ) -> None:
+        if is_group_chat(callback):
+            await callback.answer()
+            if callback.message is not None:
+                await callback.message.edit_text(
+                    command_menu_text(
+                        is_admin=is_admin_user_id(
+                            callback.from_user.id if callback.from_user else None
+                        )
+                    ),
+                    parse_mode="HTML",
+                )
+            return
         is_admin = is_admin_user_id(callback.from_user.id if callback.from_user else None)
         profile = await _menu_profile(ai_store, callback.from_user)
         await safe_edit_menu(
@@ -363,6 +397,7 @@ async def run_polling_forever(
 
 async def main() -> None:
     load_dotenv(override=True)
+    install_group_command_mode()
     logging.basicConfig(
         level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -388,6 +423,15 @@ async def main() -> None:
     )
 
     bot = Bot(token=bot_token)
+    try:
+        me = await bot.get_me()
+    except Exception as error:  # noqa: BLE001
+        logging.getLogger("Main").warning("Bot username olinmadi: %s", error)
+    else:
+        resolved_username = _normalize_bot_username(getattr(me, "username", "") or "")
+        env_username = _normalize_bot_username(os.getenv("BOT_USERNAME", ""))
+        if resolved_username and resolved_username != env_username:
+            os.environ["BOT_USERNAME"] = resolved_username
     dispatcher = Dispatcher(storage=MemoryStorage())
     analytics_store = AnalyticsStore()
     ai_store = AIStore()

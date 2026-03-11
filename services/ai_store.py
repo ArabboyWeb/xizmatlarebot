@@ -113,32 +113,6 @@ def _next_monthly_reset(now: datetime | None = None) -> datetime:
     return datetime(year=year, month=month, day=1, tzinfo=timezone.utc)
 
 
-def _usage_event(
-    *,
-    provider: str,
-    model: str,
-    route: str,
-    credits_used: int,
-    prompt_tokens: int,
-    completion_tokens: int,
-    latency_ms: int,
-    ok: bool,
-    error_text: str = "",
-) -> dict[str, Any]:
-    return {
-        "requested_at": _iso(_utc_now()),
-        "provider": provider,
-        "model": model,
-        "route": route,
-        "credits_used": int(credits_used),
-        "prompt_tokens": int(prompt_tokens),
-        "completion_tokens": int(completion_tokens),
-        "latency_ms": int(latency_ms),
-        "ok": bool(ok),
-        "error_text": str(error_text or "").strip(),
-    }
-
-
 def _complimentary_service_bucket(service_key: str) -> str:
     key = resolve_service_key(service_key)
     if key in COMPLIMENTARY_MEDIA_SERVICE_KEYS:
@@ -163,11 +137,11 @@ class AIStore:
         self._data: dict[str, Any] = {}
         self._pool: Any | None = None
         self._session_conversations: dict[str, list[dict[str, str]]] = {}
+        self._recent_requests: dict[str, list[datetime]] = {}
 
     def _default_data(self) -> dict[str, Any]:
         return {
             "users": {},
-            "usage_history": {},
         }
 
     async def startup(self) -> None:
@@ -217,22 +191,6 @@ class AIStore:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
-        CREATE TABLE IF NOT EXISTS ai_usage_events (
-            id BIGSERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            provider TEXT NOT NULL DEFAULT '',
-            model TEXT NOT NULL DEFAULT '',
-            route TEXT NOT NULL DEFAULT '',
-            credits_used BIGINT NOT NULL DEFAULT 0,
-            prompt_tokens BIGINT NOT NULL DEFAULT 0,
-            completion_tokens BIGINT NOT NULL DEFAULT 0,
-            latency_ms BIGINT NOT NULL DEFAULT 0,
-            ok BOOLEAN NOT NULL DEFAULT TRUE,
-            error_text TEXT NOT NULL DEFAULT ''
-        );
-        CREATE INDEX IF NOT EXISTS idx_ai_usage_events_user_requested_at
-            ON ai_usage_events (user_id, requested_at DESC);
         """
         async with self._pool.acquire() as connection:
             await connection.execute(schema_sql)
@@ -277,6 +235,10 @@ class AIStore:
                     self._data = self._default_data()
             else:
                 self._data = self._default_data()
+            if not isinstance(self._data, dict):
+                self._data = self._default_data()
+            self._data.setdefault("users", {})
+            self._data.pop("usage_history", None)
             self._loaded = True
 
     async def _save_locked(self) -> None:
@@ -633,33 +595,26 @@ class AIStore:
         return effective_selected_plan(user)
 
     async def requests_in_last_minute(self, *, user_id: int) -> int:
-        threshold = _utc_now() - timedelta(minutes=1)
-        if self._pool is not None:
-            async with self._pool.acquire() as connection:
-                value = await connection.fetchval(
-                    """
-                    SELECT COUNT(*)
-                    FROM ai_usage_events
-                    WHERE user_id = $1 AND requested_at >= $2
-                    """,
-                    int(user_id),
-                    threshold,
-                )
-            return int(value or 0)
+        return self._recent_request_count(user_id=user_id)
 
-        await self._ensure_loaded()
-        async with self._lock:
-            history = self._data.setdefault("usage_history", {}).get(str(int(user_id)), [])
-            if not isinstance(history, list):
-                return 0
-            count = 0
-            for item in history:
-                if not isinstance(item, dict):
-                    continue
-                requested_at = _parse_dt(item.get("requested_at"))
-                if requested_at >= threshold:
-                    count += 1
-            return count
+    def _remember_recent_request(self, *, user_id: int, requested_at: datetime | None = None) -> None:
+        now = requested_at or _utc_now()
+        threshold = now - timedelta(minutes=1)
+        key = str(int(user_id))
+        history = self._recent_requests.setdefault(key, [])
+        history.append(now)
+        self._recent_requests[key] = [item for item in history if item >= threshold]
+
+    def _recent_request_count(self, *, user_id: int) -> int:
+        now = _utc_now()
+        threshold = now - timedelta(minutes=1)
+        key = str(int(user_id))
+        history = self._recent_requests.get(key, [])
+        if not isinstance(history, list):
+            return 0
+        filtered = [item for item in history if isinstance(item, datetime) and item >= threshold]
+        self._recent_requests[key] = filtered
+        return len(filtered)
 
     async def check_request_limits(
         self,
@@ -766,24 +721,7 @@ class AIStore:
 
             user["last_request_at"] = _iso(_utc_now())
             user["updated_at"] = _iso(_utc_now())
-
-            history = self._data.setdefault("usage_history", {}).setdefault(key, [])
-            if isinstance(history, list):
-                history.insert(
-                    0,
-                    _usage_event(
-                        provider=provider,
-                        model=model,
-                        route=route,
-                        credits_used=credits_used,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        latency_ms=latency_ms,
-                        ok=ok,
-                        error_text=error_text,
-                    ),
-                )
-                del history[200:]
+            self._remember_recent_request(user_id=user_id)
             await self._save_locked()
             return json.loads(json.dumps(user))
 
@@ -859,42 +797,13 @@ class AIStore:
                         """,
                         int(user_id),
                     )
-
-                await connection.execute(
-                    """
-                    INSERT INTO ai_usage_events (
-                        user_id,
-                        requested_at,
-                        provider,
-                        model,
-                        route,
-                        credits_used,
-                        prompt_tokens,
-                        completion_tokens,
-                        latency_ms,
-                        ok,
-                        error_text
-                    )
-                    VALUES ($1, NOW(), $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                    """,
-                    int(user_id),
-                    provider,
-                    model,
-                    route,
-                    int(credits_used),
-                    int(prompt_tokens),
-                    int(completion_tokens),
-                    int(latency_ms),
-                    bool(ok),
-                    error_text,
-                )
-
                 row = await connection.fetchrow(
                     "SELECT * FROM ai_users WHERE user_id = $1",
                     int(user_id),
                 )
                 if row is None:
                     raise RuntimeError("AI foydalanuvchi yozuvi yangilanmadi.")
+                self._remember_recent_request(user_id=user_id)
                 return self._serialize_row(row)
 
     async def get_conversation(self, *, user_id: int) -> list[dict[str, str]]:

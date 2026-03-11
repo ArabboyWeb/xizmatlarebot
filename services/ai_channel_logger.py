@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import Chat
+from aiogram.types.input_file import BufferedInputFile
 
 DEFAULT_AI_LOG_CHANNEL_LINK = "https://t.me/+0IXGNITrmlNmZGMy"
 DEFAULT_CHANNEL_STATE_PATH = (
@@ -93,8 +95,83 @@ def resolve_channel_target() -> str:
     return ""
 
 
+def clear_channel_state() -> None:
+    path = _state_path()
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def has_channel_target() -> bool:
     return bool(resolve_channel_target())
+
+
+def _public_channel_target(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.isdigit() or (raw.startswith("-") and raw[1:].isdigit()):
+        return raw
+    if raw.startswith("@"):
+        return raw
+    if raw.startswith("https://t.me/") and "/+" not in raw:
+        tail = raw.rsplit("/", 1)[-1].strip().lstrip("@")
+        return f"@{tail}" if tail else ""
+    if raw.startswith("t.me/") and "/+" not in raw:
+        tail = raw.rsplit("/", 1)[-1].strip().lstrip("@")
+        return f"@{tail}" if tail else ""
+    if raw.replace("_", "").isalnum():
+        return f"@{raw.lstrip('@')}"
+    return ""
+
+
+def _candidate_targets() -> list[tuple[str, bool]]:
+    candidates: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+
+    def add(value: Any, *, from_state: bool = False) -> None:
+        target = str(value or "").strip()
+        if not target or target in seen:
+            return
+        seen.add(target)
+        candidates.append((target, from_state))
+
+    explicit_target = _env("AI_LOG_CHANNEL_ID")
+    if explicit_target:
+        add(explicit_target, from_state=False)
+
+    state = _read_state()
+    add(state.get("chat_id"), from_state=True)
+    add(_public_channel_target(state.get("username")), from_state=True)
+
+    public_link_target = _public_channel_target(channel_link())
+    if public_link_target:
+        add(public_link_target, from_state=False)
+
+    return candidates
+
+
+async def _resolve_working_target(bot: Bot) -> str:
+    state = _read_state()
+    state_present = bool(state.get("chat_id") or state.get("username"))
+    last_state_error = False
+    for target, from_state in _candidate_targets():
+        try:
+            chat = await bot.get_chat(target)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            if from_state:
+                last_state_error = True
+            continue
+        except Exception:
+            continue
+        if getattr(chat, "type", None) != "channel":
+            continue
+        remember_channel(chat)
+        return str(chat.id)
+    if last_state_error or (state_present and not _env("AI_LOG_CHANNEL_ID")):
+        clear_channel_state()
+    return ""
 
 
 def _split_text(text: str, prefix: str) -> list[str]:
@@ -135,7 +212,7 @@ async def log_ai_exchange(
     prompt_tokens: int,
     completion_tokens: int,
 ) -> bool:
-    target = resolve_channel_target()
+    target = await _resolve_working_target(bot)
     if not target:
         return False
 
@@ -175,4 +252,52 @@ async def log_ai_exchange(
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+    return True
+
+
+async def log_image_generation(
+    bot: Bot,
+    *,
+    user_id: int,
+    username: str,
+    full_name: str,
+    prompt_text: str,
+    model: str,
+    width: int,
+    height: int,
+    seed: int,
+    image_bytes: bytes,
+    file_name: str,
+) -> bool:
+    target = await _resolve_working_target(bot)
+    if not target:
+        return False
+
+    label = _user_label(user_id=user_id, username=username, full_name=full_name)
+    header = (
+        "<b>Image generation log</b>\n"
+        f"<b>Vaqt:</b> <code>{html.escape(_utc_now_text())}</code>\n"
+        f"<b>Foydalanuvchi:</b> <a href=\"tg://user?id={user_id}\">{html.escape(label)}</a>\n"
+        f"<b>User ID:</b> <code>{user_id}</code>\n"
+        f"<b>Model:</b> <code>{html.escape(model)}</code>\n"
+        f"<b>O'lcham:</b> <b>{int(width)}x{int(height)}</b>\n"
+        f"<b>Seed:</b> <code>{int(seed)}</code>"
+    )
+    await bot.send_message(
+        chat_id=target,
+        text=header,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+    for chunk in _split_text(prompt_text, "Prompt"):
+        await bot.send_message(
+            chat_id=target,
+            text=chunk,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    await bot.send_photo(
+        chat_id=target,
+        photo=BufferedInputFile(image_bytes, filename=file_name),
+    )
     return True
