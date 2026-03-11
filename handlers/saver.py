@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -687,7 +688,18 @@ async def save_repeat_handler(callback: CallbackQuery, state: FSMContext) -> Non
     await _safe_edit(callback, save_prompt_text(), save_keyboard())
 
 
-@router.message(SaverState.waiting_url, F.text)
+@router.message(Command("save"))
+async def save_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(SaverState.waiting_url)
+    await message.answer(
+        save_prompt_text(),
+        parse_mode="HTML",
+        reply_markup=save_keyboard(),
+    )
+
+
+@router.message(SaverState.waiting_url, F.text & ~F.text.startswith("/"))
 async def save_url_handler(
     message: Message,
     state: FSMContext,

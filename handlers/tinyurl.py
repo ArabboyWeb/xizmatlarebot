@@ -2,6 +2,7 @@ import html
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -83,7 +84,23 @@ async def tinyurl_start_handler(callback: CallbackQuery, state: FSMContext) -> N
     await _show_prompt(callback, state)
 
 
-@router.message(TinyUrlState.waiting_url, F.text)
+@router.message(Command("tinyurl"))
+@router.message(Command("link"))
+async def tinyurl_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(TinyUrlState.waiting_url)
+    await message.answer(
+        (
+            "<b>TinyURL (Free)</b>\n"
+            "Qisqartirish uchun to'liq <code>http/https</code> URL yuboring.\n\n"
+            "Misol:\n<code>https://example.com/very/long/link</code>"
+        ),
+        parse_mode="HTML",
+        reply_markup=tinyurl_prompt_keyboard(),
+    )
+
+
+@router.message(TinyUrlState.waiting_url, F.text & ~F.text.startswith("/"))
 async def tinyurl_message_handler(
     message: Message,
     state: FSMContext,

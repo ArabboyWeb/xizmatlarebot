@@ -2,6 +2,7 @@ import html
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -105,7 +106,23 @@ async def shazam_start_handler(callback: CallbackQuery, state: FSMContext) -> No
     await _show_prompt(callback, state)
 
 
-@router.message(ShazamState.waiting_query, F.text)
+@router.message(Command("shazam"))
+@router.message(Command("music"))
+async def shazam_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(ShazamState.waiting_query)
+    await message.answer(
+        (
+            "<b>Musiqa qidirish</b>\n"
+            "Qo'shiq nomini yuboring.\n"
+            "Masalan: <code>kiss the</code>"
+        ),
+        parse_mode="HTML",
+        reply_markup=shazam_prompt_keyboard(),
+    )
+
+
+@router.message(ShazamState.waiting_query, F.text & ~F.text.startswith("/"))
 async def shazam_query_handler(
     message: Message,
     state: FSMContext,

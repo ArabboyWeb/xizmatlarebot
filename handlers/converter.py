@@ -8,6 +8,7 @@ from pathlib import Path
 import fitz
 from PIL import UnidentifiedImageError
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -423,6 +424,21 @@ async def converter_entry_handler(callback: CallbackQuery, state: FSMContext) ->
             "Kerakli bo'limni tanlang:"
         ),
         converter_menu_keyboard(),
+    )
+
+
+@router.message(Command("convert"))
+@router.message(Command("converter"))
+async def converter_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        (
+            "<b>Converter</b>\n"
+            "PDF, Word va rasm fayllarni professional konvertatsiya qiling.\n"
+            "Kerakli bo'limni tanlang:"
+        ),
+        parse_mode="HTML",
+        reply_markup=converter_menu_keyboard(),
     )
 
 

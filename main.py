@@ -265,9 +265,21 @@ def register_core_handlers(
             "/start - asosiy menyu\n"
             "/menu - xizmatlar menyusi\n"
             "/ai - sun'iy intellekt bo'limi\n"
+            "/image - rasm yaratish\n"
+            "/youtube - YT / Insta / TikTok saver\n"
+            "/save - direct fayl saqlash\n"
+            "/weather - ob-havo\n"
+            "/currency - valyuta\n"
+            "/translate - tarjimon\n"
+            "/jobs - ish qidirish\n"
+            "/wiki - wikipedia\n"
+            "/mail - temporary email\n"
+            "/tinyurl - link qisqartirish\n"
+            "/shazam - musiqa qidirish\n"
+            "/convert - converter\n"
             "/help - yordam\n"
             "/limits - saqlash limitlari\n\n"
-            "Kerakli xizmatni menyudan tanlang."
+            "Bir command yuboring va keyingi xabarlar shu servisga tegishli bo'ladi."
         )
         await message.answer(text)
 

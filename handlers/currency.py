@@ -4,8 +4,9 @@ import logging
 
 import aiohttp
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.chat_action import ChatActionSender
 
 from services.ai_store import AIStore
@@ -95,3 +96,42 @@ async def currency_menu_handler(callback: CallbackQuery, ai_store: AIStore) -> N
 @router.callback_query(F.data == "currency:refresh")
 async def currency_refresh_handler(callback: CallbackQuery, ai_store: AIStore) -> None:
     await render_currency(callback, ai_store)
+
+
+@router.message(Command("currency"))
+async def currency_command_handler(message: Message, ai_store: AIStore) -> None:
+    charge = await ensure_balance(
+        ai_store,
+        message,
+        "currency_refresh",
+        reply_markup=currency_keyboard(),
+    )
+    if charge is None:
+        return
+    _user, cost, user_id, username, full_name = charge
+
+    try:
+        async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+            rates, date_value = await fetch_currency_rates()
+        text = build_currency_text(rates, date_value)
+    except asyncio.TimeoutError:
+        text = currency_error_text("So'rov vaqti tugadi (timeout).")
+    except aiohttp.ClientError as error:
+        logger.exception("CBU API so'rovida tarmoq xatosi")
+        text = currency_error_text(f"Tarmoq xatosi: {error}")
+    except Exception as error:  # noqa: BLE001
+        logger.exception("CBU modulida kutilmagan xatolik")
+        text = currency_error_text(f"Kutilmagan xatolik: {error}")
+    else:
+        await ai_store.charge_tokens(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            amount=cost,
+        )
+
+    await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=currency_keyboard(),
+    )

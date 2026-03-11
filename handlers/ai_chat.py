@@ -656,7 +656,7 @@ async def ai_clear_callback(
     )
 
 
-@router.message(AIChatState.waiting_prompt, F.text)
+@router.message(AIChatState.waiting_prompt, F.text & ~F.text.startswith("/"))
 async def ai_prompt_handler(
     message: Message,
     state: FSMContext,

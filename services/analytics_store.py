@@ -567,6 +567,29 @@ class AnalyticsMiddleware(BaseMiddleware):
     def __init__(self, analytics_store: AnalyticsStore) -> None:
         self.analytics_store = analytics_store
 
+    @staticmethod
+    def _skip_analytics_for_message(*, command: str, state_name: str) -> bool:
+        normalized_command = command.strip().lower()
+        normalized_state = state_name.strip().lower()
+        if normalized_command in {"/ai", "/image", "/art", "/pollinations"}:
+            return True
+        return normalized_state in {
+            "aichatstate:waiting_prompt",
+            "pollinationsstate:waiting_prompt",
+        }
+
+    @staticmethod
+    def _skip_analytics_for_callback(callback_data: str) -> bool:
+        normalized = str(callback_data or "").strip().lower()
+        return normalized.startswith(
+            (
+                "ai:",
+                "pollinations:",
+                "services:ai",
+                "services:pollinations",
+            )
+        )
+
     async def __call__(
         self,
         handler: Callable[[Any, dict[str, Any]], Awaitable[Any]],
@@ -592,18 +615,29 @@ class AnalyticsMiddleware(BaseMiddleware):
                 command = ""
                 if text.startswith("/"):
                     command = text.split(maxsplit=1)[0].lower()
-                await self.analytics_store.track_message(
-                    user_id=int(user.id),
-                    username=username,
-                    full_name=full_name,
+                state_name = ""
+                fsm_state = data.get("state")
+                get_state = getattr(fsm_state, "get_state", None)
+                if callable(get_state):
+                    state_name = str((await get_state()) or "")
+                if not self._skip_analytics_for_message(
                     command=command,
-                )
+                    state_name=state_name,
+                ):
+                    await self.analytics_store.track_message(
+                        user_id=int(user.id),
+                        username=username,
+                        full_name=full_name,
+                        command=command,
+                    )
             elif isinstance(event, CallbackQuery):
-                await self.analytics_store.track_callback(
-                    user_id=int(user.id),
-                    username=username,
-                    full_name=full_name,
-                    callback_data=str(event.data or ""),
-                )
+                callback_data = str(event.data or "")
+                if not self._skip_analytics_for_callback(callback_data):
+                    await self.analytics_store.track_callback(
+                        user_id=int(user.id),
+                        username=username,
+                        full_name=full_name,
+                        callback_data=callback_data,
+                    )
 
         return await handler(event, data)

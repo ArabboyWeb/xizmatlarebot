@@ -2,6 +2,7 @@ import html
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -142,6 +143,21 @@ async def translate_repeat_handler(callback: CallbackQuery, state: FSMContext) -
     await _show_menu(callback, state)
 
 
+@router.message(Command("translate"))
+async def translate_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.update_data(
+        translate_source=DEFAULT_SOURCE,
+        translate_target=DEFAULT_TARGET,
+    )
+    await state.set_state(TranslateState.waiting_text)
+    await message.answer(
+        _prompt_text(DEFAULT_SOURCE, DEFAULT_TARGET),
+        parse_mode="HTML",
+        reply_markup=translate_keyboard(DEFAULT_SOURCE, DEFAULT_TARGET),
+    )
+
+
 @router.callback_query(F.data.startswith("translate:source:"))
 async def translate_source_handler(callback: CallbackQuery, state: FSMContext) -> None:
     raw = callback.data or ""
@@ -174,7 +190,7 @@ async def translate_target_handler(callback: CallbackQuery, state: FSMContext) -
     await _show_menu(callback, state)
 
 
-@router.message(TranslateState.waiting_text, F.text)
+@router.message(TranslateState.waiting_text, F.text & ~F.text.startswith("/"))
 async def translate_text_handler(
     message: Message,
     state: FSMContext,

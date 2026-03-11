@@ -3,6 +3,7 @@ import logging
 import re
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -139,6 +140,21 @@ async def tempmail_entry_handler(callback: CallbackQuery, state: FSMContext) -> 
     )
 
 
+@router.message(Command("tempmail"))
+@router.message(Command("mail"))
+async def tempmail_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        (
+            "<b>1secmail (Temporary Email)</b>\n"
+            "Free disposable email yarating va inboxni bot ichida tekshiring.\n"
+            "Boshlash uchun <b>Yangi email</b> tugmasini bosing."
+        ),
+        parse_mode="HTML",
+        reply_markup=tempmail_keyboard(),
+    )
+
+
 @router.callback_query(F.data == "tempmail:new")
 async def tempmail_new_email_handler(
     callback: CallbackQuery,
@@ -256,7 +272,7 @@ async def tempmail_read_prompt_handler(
     )
 
 
-@router.message(TempMailState.waiting_message_id, F.text)
+@router.message(TempMailState.waiting_message_id, F.text & ~F.text.startswith("/"))
 async def tempmail_read_message_handler(
     message: Message,
     state: FSMContext,

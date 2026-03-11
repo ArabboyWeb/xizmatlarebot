@@ -5,6 +5,7 @@ import html
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -393,6 +394,25 @@ async def youtube_clear_handler(callback: CallbackQuery, state: FSMContext) -> N
     await _show_menu(callback, state)
 
 
+@router.message(Command("youtube"))
+@router.message(Command("media"))
+async def youtube_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.update_data(
+        youtube_mode="video",
+        youtube_quality="best",
+        youtube_audio_bitrate="192",
+        youtube_results=[],
+        youtube_query="",
+    )
+    await state.set_state(YoutubeState.waiting_input)
+    await message.answer(
+        _prompt_text("video", "best", "192"),
+        parse_mode="HTML",
+        reply_markup=youtube_keyboard("video", "best", "192"),
+    )
+
+
 @router.callback_query(F.data.startswith("youtube:mode:"))
 async def youtube_mode_handler(callback: CallbackQuery, state: FSMContext) -> None:
     value = str((callback.data or "").split(":")[-1]).lower()
@@ -426,7 +446,7 @@ async def youtube_bitrate_handler(callback: CallbackQuery, state: FSMContext) ->
     await _show_menu(callback, state)
 
 
-@router.message(YoutubeState.waiting_input, F.text)
+@router.message(YoutubeState.waiting_input, F.text & ~F.text.startswith("/"))
 async def youtube_input_handler(
     message: Message,
     state: FSMContext,

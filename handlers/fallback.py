@@ -11,4 +11,6 @@ async def fallback_message_handler(message: Message, state: FSMContext) -> None:
         return
     if await state.get_state():
         return
+    if getattr(message.chat, "type", "") in {"group", "supergroup"}:
+        return
     await message.answer("Xizmat tanlash uchun /menu ni bosing.")

@@ -2,6 +2,7 @@ import html
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -109,7 +110,22 @@ async def jobs_start_handler(callback: CallbackQuery, state: FSMContext) -> None
     await _show_prompt(callback, state)
 
 
-@router.message(JobsState.waiting_query, F.text)
+@router.message(Command("jobs"))
+async def jobs_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(JobsState.waiting_query)
+    await message.answer(
+        (
+            "<b>Ish qidirish</b>\n"
+            "Kasb va joylashuv bo'yicha qidiring.\n"
+            "Masalan: <code>developer jobs in chicago</code>"
+        ),
+        parse_mode="HTML",
+        reply_markup=jobs_prompt_keyboard(),
+    )
+
+
+@router.message(JobsState.waiting_query, F.text & ~F.text.startswith("/"))
 async def jobs_query_handler(
     message: Message,
     state: FSMContext,

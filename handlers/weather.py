@@ -2,6 +2,7 @@ import html
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -142,6 +143,16 @@ async def weather_entry_handler(callback: CallbackQuery, state: FSMContext) -> N
     )
 
 
+@router.message(Command("weather"))
+async def weather_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "<b>Ob-havo bo'limi (Open-Meteo)</b>\nKerakli usulni tanlang:",
+        parse_mode="HTML",
+        reply_markup=weather_menu_keyboard(),
+    )
+
+
 @router.callback_query(F.data == "weather:city")
 async def weather_city_callback(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(WeatherState.waiting_city)
@@ -164,7 +175,7 @@ async def weather_location_callback(callback: CallbackQuery, state: FSMContext) 
     )
 
 
-@router.message(WeatherState.waiting_city, F.text)
+@router.message(WeatherState.waiting_city, F.text & ~F.text.startswith("/"))
 async def weather_city_message(message: Message, ai_store: AIStore) -> None:
     city = (message.text or "").strip()
     if not city or city.startswith("/"):
@@ -241,7 +252,7 @@ async def weather_location_message(message: Message, ai_store: AIStore) -> None:
         )
 
 
-@router.message(WeatherState.waiting_location, F.text)
+@router.message(WeatherState.waiting_location, F.text & ~F.text.startswith("/"))
 async def weather_location_text_fallback(message: Message) -> None:
     await message.answer(
         "Lokatsiya yuborish uchun Telegram attachment menyusidan <b>Location</b> ni tanlang.",

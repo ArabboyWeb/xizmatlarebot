@@ -3,6 +3,7 @@ import logging
 import random
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -161,6 +162,23 @@ async def pollinations_repeat_handler(
     await _show_menu(callback, state)
 
 
+@router.message(Command("image"))
+@router.message(Command("art"))
+async def pollinations_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.update_data(
+        pollinations_model="flux",
+        pollinations_width=1024,
+        pollinations_height=1024,
+    )
+    await state.set_state(PollinationsState.waiting_prompt)
+    await message.answer(
+        _prompt_text("flux", (1024, 1024)),
+        parse_mode="HTML",
+        reply_markup=pollinations_keyboard("flux", (1024, 1024)),
+    )
+
+
 @router.callback_query(F.data.startswith("pollinations:model:"))
 async def pollinations_model_handler(
     callback: CallbackQuery, state: FSMContext
@@ -202,7 +220,7 @@ async def pollinations_size_handler(
     await _show_menu(callback, state)
 
 
-@router.message(PollinationsState.waiting_prompt, F.text)
+@router.message(PollinationsState.waiting_prompt, F.text & ~F.text.startswith("/"))
 async def pollinations_prompt_handler(
     message: Message,
     state: FSMContext,

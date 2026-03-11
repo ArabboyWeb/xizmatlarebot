@@ -2,6 +2,7 @@ import html
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -103,7 +104,24 @@ async def wikipedia_lang_handler(callback: CallbackQuery, state: FSMContext) -> 
     await _show_prompt(callback, state)
 
 
-@router.message(WikipediaState.waiting_query, F.text)
+@router.message(Command("wiki"))
+@router.message(Command("wikipedia"))
+async def wikipedia_command_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.update_data(wiki_lang="uz")
+    await state.set_state(WikipediaState.waiting_query)
+    await message.answer(
+        (
+            "<b>Wikipedia qidiruv</b>\n"
+            "Til: <b>UZ</b>\n"
+            "Mavzu nomini yuboring. Bot maqolaning qisqa tavsifini beradi."
+        ),
+        parse_mode="HTML",
+        reply_markup=wikipedia_keyboard("uz"),
+    )
+
+
+@router.message(WikipediaState.waiting_query, F.text & ~F.text.startswith("/"))
 async def wikipedia_query_handler(
     message: Message,
     state: FSMContext,
