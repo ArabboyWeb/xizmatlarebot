@@ -257,22 +257,44 @@ def _convert_video_to_mp4_sync(
         "-y",
         "-i",
         str(source),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-map_metadata",
+        "-1",
+        "-map_chapters",
+        "-1",
+        "-sn",
+        "-dn",
         "-vf",
-        "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+        "-fps_mode",
+        "cfr",
+        "-r",
+        "30",
         "-movflags",
         "+faststart",
-        "-pix_fmt",
-        "yuv420p",
         "-c:v",
         "libx264",
+        "-tag:v",
+        "avc1",
         "-profile:v",
-        "main",
+        "baseline",
         "-level",
-        "4.0",
+        "3.1",
         "-preset",
         "veryfast",
         "-crf",
         "23",
+        "-g",
+        "60",
+        "-keyint_min",
+        "60",
+        "-sc_threshold",
+        "0",
+        "-bf",
+        "0",
         "-c:a",
         "aac",
         "-ac",
@@ -281,6 +303,8 @@ def _convert_video_to_mp4_sync(
         "44100",
         "-b:a",
         "128k",
+        "-max_muxing_queue_size",
+        "1024",
         str(target),
     ]
     result = subprocess.run(
@@ -310,11 +334,8 @@ async def _prepare_video_for_send(downloaded: DownloadedFile) -> DownloadedFile:
     ffmpeg_executable = _ffmpeg_path()
     if not ffmpeg_executable:
         return downloaded
-    if not _should_convert_video_for_telegram(
-        downloaded,
-        ffmpeg_executable=ffmpeg_executable,
-    ):
-        return downloaded
+    # Mobile Telegram playback is more fragile than desktop, so normalize every video
+    # to one safe MP4 profile before sending.
     converted = await asyncio.to_thread(
         _convert_video_to_mp4_sync,
         downloaded,
