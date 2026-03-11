@@ -204,10 +204,23 @@ def main_menu_text(
     lifetime_tokens_spent: int = 0,
     referral_inviter_bonus: int = 0,
     referral_invitee_bonus: int = 0,
+    free_reset_tokens: int = 0,
+    free_reset_hours: int = 0,
+    free_reset_date: str = "",
+    reset_date: str = "",
     notice: str = "",
     is_admin: bool = False,
+    **_: object,
 ) -> str:
-    _ = upload_limit_bytes, download_limit_bytes, is_admin
+    _ = (
+        upload_limit_bytes,
+        download_limit_bytes,
+        free_reset_tokens,
+        free_reset_hours,
+        free_reset_date,
+        reset_date,
+        is_admin,
+    )
     text = (
         "<b>Assalomu alaykum! Xizmatlar E-Botga xush kelibsiz.</b>\n"
         "Pastdagi bo'limlardan birini tanlang.\n\n"
