@@ -5,6 +5,7 @@ import contextlib
 import html
 import logging
 import mimetypes
+import re
 import subprocess
 from pathlib import Path
 
@@ -54,6 +55,10 @@ class SaverState(StatesGroup):
 
 
 TELEGRAM_STREAMABLE_VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov"}
+TELEGRAM_MOBILE_VIDEO_SUFFIXES = {".mp4"}
+TELEGRAM_MOBILE_VIDEO_CODECS = {"h264"}
+TELEGRAM_MOBILE_AUDIO_CODECS = {"", "aac", "mp3"}
+TELEGRAM_MOBILE_PIXEL_FORMATS = {"yuv420p", "nv12"}
 
 
 def _format_bytes(size: int) -> str:
@@ -152,12 +157,83 @@ def _ffmpeg_path() -> str:
     return value if value and Path(value).exists() else ""
 
 
-def _should_convert_video_for_telegram(downloaded: DownloadedFile) -> bool:
+def _probe_video_streams(path: Path, *, ffmpeg_executable: str) -> dict[str, object]:
+    command = [
+        ffmpeg_executable,
+        "-hide_banner",
+        "-i",
+        str(path),
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+        check=False,
+    )
+    output = "\n".join(part for part in [result.stdout, result.stderr] if part)
+    metadata: dict[str, object] = {
+        "video_codec": "",
+        "audio_codec": "",
+        "pixel_format": "",
+        "width": 0,
+        "height": 0,
+    }
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if "Video:" in line and not metadata["video_codec"]:
+            payload = line.split("Video:", 1)[1].strip()
+            parts = [part.strip() for part in payload.split(",") if part.strip()]
+            if parts:
+                metadata["video_codec"] = parts[0].split()[0].lower()
+            for part in parts[1:]:
+                lowered = part.lower()
+                if not metadata["pixel_format"] and lowered.startswith(("yuv", "nv")):
+                    metadata["pixel_format"] = lowered.split()[0].split("(")[0]
+                match = re.search(r"(\d{2,5})x(\d{2,5})", part)
+                if match:
+                    metadata["width"] = int(match.group(1))
+                    metadata["height"] = int(match.group(2))
+                    break
+        if "Audio:" in line and not metadata["audio_codec"]:
+            payload = line.split("Audio:", 1)[1].strip()
+            parts = [part.strip() for part in payload.split(",") if part.strip()]
+            if parts:
+                metadata["audio_codec"] = parts[0].split()[0].lower()
+    return metadata
+
+
+def _should_convert_video_for_telegram(
+    downloaded: DownloadedFile,
+    *,
+    ffmpeg_executable: str,
+) -> bool:
     suffix = downloaded.path.suffix.lower()
     content_type = str(downloaded.content_type or "").strip().lower()
-    if suffix in TELEGRAM_STREAMABLE_VIDEO_EXTENSIONS and content_type.startswith("video/"):
-        return False
-    return True
+    if suffix not in TELEGRAM_STREAMABLE_VIDEO_EXTENSIONS:
+        return True
+    if not content_type.startswith("video/"):
+        return True
+    if suffix not in TELEGRAM_MOBILE_VIDEO_SUFFIXES:
+        return True
+
+    metadata = _probe_video_streams(downloaded.path, ffmpeg_executable=ffmpeg_executable)
+    video_codec = str(metadata.get("video_codec", "") or "").lower()
+    audio_codec = str(metadata.get("audio_codec", "") or "").lower()
+    pixel_format = str(metadata.get("pixel_format", "") or "").lower()
+    width = int(metadata.get("width", 0) or 0)
+    height = int(metadata.get("height", 0) or 0)
+
+    if video_codec not in TELEGRAM_MOBILE_VIDEO_CODECS:
+        return True
+    if audio_codec not in TELEGRAM_MOBILE_AUDIO_CODECS:
+        return True
+    if pixel_format and pixel_format not in TELEGRAM_MOBILE_PIXEL_FORMATS:
+        return True
+    if width > 0 and height > 0 and (width % 2 != 0 or height % 2 != 0):
+        return True
+    return False
 
 
 def _convert_video_to_mp4_sync(
@@ -168,7 +244,11 @@ def _convert_video_to_mp4_sync(
     source = downloaded.path
     if not source.exists():
         return downloaded
-    target = source.with_suffix(".mp4")
+    target = (
+        source.with_name(f"{source.stem}_tg.mp4")
+        if source.suffix.lower() == ".mp4"
+        else source.with_suffix(".mp4")
+    )
     if target.exists():
         with contextlib.suppress(OSError):
             target.unlink()
@@ -177,18 +257,28 @@ def _convert_video_to_mp4_sync(
         "-y",
         "-i",
         str(source),
+        "-vf",
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-movflags",
         "+faststart",
         "-pix_fmt",
         "yuv420p",
         "-c:v",
         "libx264",
+        "-profile:v",
+        "main",
+        "-level",
+        "4.0",
         "-preset",
         "veryfast",
         "-crf",
         "23",
         "-c:a",
         "aac",
+        "-ac",
+        "2",
+        "-ar",
+        "44100",
         "-b:a",
         "128k",
         str(target),
@@ -204,8 +294,9 @@ def _convert_video_to_mp4_sync(
             target.unlink()
         return downloaded
 
-    with contextlib.suppress(OSError):
-        source.unlink()
+    if source != target:
+        with contextlib.suppress(OSError):
+            source.unlink()
     return DownloadedFile(
         path=target,
         file_name=target.name,
@@ -216,10 +307,13 @@ def _convert_video_to_mp4_sync(
 
 
 async def _prepare_video_for_send(downloaded: DownloadedFile) -> DownloadedFile:
-    if not _should_convert_video_for_telegram(downloaded):
-        return downloaded
     ffmpeg_executable = _ffmpeg_path()
     if not ffmpeg_executable:
+        return downloaded
+    if not _should_convert_video_for_telegram(
+        downloaded,
+        ffmpeg_executable=ffmpeg_executable,
+    ):
         return downloaded
     converted = await asyncio.to_thread(
         _convert_video_to_mp4_sync,
