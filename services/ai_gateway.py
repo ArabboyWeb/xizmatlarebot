@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +24,11 @@ DEFAULT_SYSTEM_PROMPT = (
     "Siz Xizmatlar E-Bot ichidagi sun'iy intellekt yordamchisiz. "
     "Aniq, foydali va qisqa javob bering. Agar foydalanuvchi boshqa til so'ramasa, "
     "o'zbek tilida javob qaytaring."
+)
+DEFAULT_RESPONSE_STYLE_PROMPT = (
+    "Javoblarni soddalashtirilgan Markdown uslubida yozing: qisqa sarlavha, punktlar, "
+    "qisqa paragraf, inline code va kerak bo'lsa fenced code block ishlating. "
+    "Jadvallarni ishlatmang, ortiqcha bezak bermang."
 )
 MODEL_ALIAS_AUTO = "auto"
 PLAN_LEVELS = {"free": 0, "premium": 1}
@@ -67,6 +74,10 @@ def _openrouter_headers() -> dict[str, str]:
 
 def _system_prompt() -> str:
     return _env("AI_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
+
+
+def _response_style_prompt() -> str:
+    return _env("AI_RESPONSE_STYLE_PROMPT", DEFAULT_RESPONSE_STYLE_PROMPT)
 
 
 def _free_simple_model() -> str:
@@ -240,6 +251,11 @@ def _usage_value(payload: dict[str, Any], *keys: str) -> int:
         return 0
 
 
+def _approx_token_count(text: str) -> int:
+    clean = str(text or "").strip()
+    return max(1, math.ceil(len(clean) / 4))
+
+
 def _api_error_text(payload: Any, status: int) -> str:
     if isinstance(payload, dict):
         error = payload.get("error")
@@ -395,7 +411,12 @@ def projected_credits(
 
 
 def build_messages(history: list[dict[str, str]], user_text: str) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = [{"role": "system", "content": _system_prompt()}]
+    messages: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "content": f"{_system_prompt()}\n\n{_response_style_prompt()}".strip(),
+        }
+    ]
     for item in history:
         role = str(item.get("role", "user") or "user").strip().lower()
         content = str(item.get("content", "") or "").strip()
@@ -437,6 +458,112 @@ async def _openrouter_completion(messages: list[dict[str, str]], model: str, rou
         text=_parse_openrouter_text(data),
         prompt_tokens=_usage_value({"u": usage}, "u", "prompt_tokens"),
         completion_tokens=_usage_value({"u": usage}, "u", "completion_tokens"),
+        provider="openrouter",
+        model=model,
+        route=route,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+    )
+
+
+def _stream_delta_text(payload: dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    delta = choices[0].get("delta")
+    if not isinstance(delta, dict):
+        return ""
+    content = delta.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text", "") or "").strip()
+            if text:
+                parts.append(text)
+        return "\n".join(parts).strip()
+    return ""
+
+
+async def _openrouter_completion_stream(
+    messages: list[dict[str, str]],
+    model: str,
+    route: str,
+    *,
+    on_text: Callable[[str], Awaitable[None]] | None,
+) -> AIResult:
+    started = time.perf_counter()
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.4,
+        "stream": True,
+    }
+    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+    text_chunks: list[str] = []
+    usage: dict[str, Any] = {}
+    buffer = ""
+    async with aiohttp.ClientSession(timeout=timeout, headers=_openrouter_headers()) as session:
+        async with session.post(OPENROUTER_URL, json=payload) as response:
+            if response.status >= 400:
+                data = await response.json(content_type=None)
+                raise RuntimeError(_api_error_text(data, response.status))
+            async for raw_chunk in response.content:
+                if not raw_chunk:
+                    continue
+                buffer += raw_chunk.decode("utf-8", errors="ignore")
+                while "\n\n" in buffer:
+                    event, buffer = buffer.split("\n\n", 1)
+                    data_lines: list[str] = []
+                    for raw_line in event.splitlines():
+                        line = raw_line.strip()
+                        if not line or line.startswith(":"):
+                            continue
+                        if line.startswith("data:"):
+                            data_lines.append(line[5:].strip())
+                    if not data_lines:
+                        continue
+                    payload_text = "\n".join(data_lines).strip()
+                    if not payload_text or payload_text == "[DONE]":
+                        continue
+                    try:
+                        stream_payload = json.loads(payload_text)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(stream_payload, dict) and isinstance(
+                        stream_payload.get("error"), dict
+                    ):
+                        raise RuntimeError(
+                            _api_error_text(
+                                {"error": stream_payload.get("error")},
+                                200,
+                            )
+                        )
+                    if isinstance(stream_payload, dict) and isinstance(
+                        stream_payload.get("usage"), dict
+                    ):
+                        usage = stream_payload.get("usage") or {}
+                    delta_text = (
+                        _stream_delta_text(stream_payload)
+                        if isinstance(stream_payload, dict)
+                        else ""
+                    )
+                    if not delta_text:
+                        continue
+                    text_chunks.append(delta_text)
+                    if on_text is not None:
+                        await on_text("".join(text_chunks))
+    final_text = "".join(text_chunks).strip()
+    if not final_text:
+        raise RuntimeError("AI text javobi topilmadi.")
+    prompt_tokens = _usage_value({"u": usage}, "u", "prompt_tokens")
+    completion_tokens = _usage_value({"u": usage}, "u", "completion_tokens")
+    return AIResult(
+        text=final_text,
+        prompt_tokens=prompt_tokens or _approx_token_count(_conversation_text(messages)),
+        completion_tokens=completion_tokens or _approx_token_count(final_text),
         provider="openrouter",
         model=model,
         route=route,
@@ -504,6 +631,7 @@ async def generate_ai_reply(
     current_plan: str,
     effective_plan: str,
     selected_model_alias: str = MODEL_ALIAS_AUTO,
+    on_text: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[AIRouteDecision, AIResult]:
     decision = select_route(
         user_text,
@@ -513,9 +641,19 @@ async def generate_ai_reply(
     )
     messages = build_messages(history, user_text)
     if decision.provider == "openrouter":
-        result = await _openrouter_completion(messages, decision.model, decision.route)
+        if on_text is not None:
+            result = await _openrouter_completion_stream(
+                messages,
+                decision.model,
+                decision.route,
+                on_text=on_text,
+            )
+        else:
+            result = await _openrouter_completion(messages, decision.model, decision.route)
     elif decision.provider == "google":
         result = await _google_completion(_conversation_text(messages), decision.model, decision.route)
     else:
         result = await _openai_completion(_conversation_text(messages), decision.model, decision.route)
+    if on_text is not None and decision.provider != "openrouter":
+        await on_text(result.text)
     return decision, result

@@ -179,9 +179,17 @@ def _probe_video_streams(path: Path, *, ffmpeg_executable: str) -> dict[str, obj
         "pixel_format": "",
         "width": 0,
         "height": 0,
+        "duration": 0,
     }
     for raw_line in output.splitlines():
         line = raw_line.strip()
+        if line.startswith("Duration:") and not metadata["duration"]:
+            match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", line)
+            if match:
+                hours = int(match.group(1))
+                minutes = int(match.group(2))
+                seconds = float(match.group(3))
+                metadata["duration"] = int(hours * 3600 + minutes * 60 + seconds)
         if "Video:" in line and not metadata["video_codec"]:
             payload = line.split("Video:", 1)[1].strip()
             parts = [part.strip() for part in payload.split(",") if part.strip()]
@@ -252,15 +260,36 @@ def _convert_video_to_mp4_sync(
     if target.exists():
         with contextlib.suppress(OSError):
             target.unlink()
+    source_meta = _probe_video_streams(source, ffmpeg_executable=ffmpeg_executable)
+    has_audio = bool(str(source_meta.get("audio_codec", "") or "").strip())
+
     command = [
         ffmpeg_executable,
         "-y",
         "-i",
         str(source),
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a:0?",
+    ]
+    if not has_audio:
+        command.extend(
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=channel_layout=stereo:sample_rate=44100",
+            ]
+        )
+    command.extend(
+        [
+            "-map",
+            "0:v:0",
+            "-map",
+            ("0:a:0?" if has_audio else "1:a:0"),
+        ]
+    )
+    if not has_audio:
+        command.append("-shortest")
+    command.extend(
+        [
         "-map_metadata",
         "-1",
         "-map_chapters",
@@ -275,14 +304,16 @@ def _convert_video_to_mp4_sync(
         "30",
         "-movflags",
         "+faststart",
+        "-brand",
+        "mp42",
         "-c:v",
         "libx264",
         "-tag:v",
         "avc1",
         "-profile:v",
-        "baseline",
+        "main",
         "-level",
-        "3.1",
+        "4.0",
         "-preset",
         "veryfast",
         "-crf",
@@ -301,12 +332,15 @@ def _convert_video_to_mp4_sync(
         "2",
         "-ar",
         "44100",
+        "-af",
+        "aresample=async=1:first_pts=0",
         "-b:a",
         "128k",
         "-max_muxing_queue_size",
         "1024",
         str(target),
-    ]
+        ]
+    )
     result = subprocess.run(
         command,
         capture_output=True,
@@ -314,6 +348,7 @@ def _convert_video_to_mp4_sync(
         check=False,
     )
     if result.returncode != 0 or not target.exists() or target.stat().st_size <= 0:
+        logger.warning("Video MP4 normalize xatosi: ffmpeg returncode=%s", result.returncode)
         with contextlib.suppress(OSError):
             target.unlink()
         return downloaded
@@ -342,6 +377,24 @@ async def _prepare_video_for_send(downloaded: DownloadedFile) -> DownloadedFile:
         ffmpeg_executable=ffmpeg_executable,
     )
     return converted
+
+
+def _video_send_params(downloaded: DownloadedFile) -> dict[str, int]:
+    ffmpeg_executable = _ffmpeg_path()
+    if not ffmpeg_executable:
+        return {}
+    meta = _probe_video_streams(downloaded.path, ffmpeg_executable=ffmpeg_executable)
+    params: dict[str, int] = {}
+    width = int(meta.get("width", 0) or 0)
+    height = int(meta.get("height", 0) or 0)
+    duration = int(meta.get("duration", 0) or 0)
+    if width > 0:
+        params["width"] = width
+    if height > 0:
+        params["height"] = height
+    if duration > 0:
+        params["duration"] = duration
+    return params
 
 
 async def send_downloaded_file(
@@ -377,11 +430,13 @@ async def send_downloaded_file(
             send_kind = detect_send_kind(downloaded.file_name, downloaded.content_type)
             file_input = FSInputFile(downloaded.path, filename=downloaded.file_name)
             caption = build_caption(downloaded)
+            video_params = _video_send_params(downloaded)
             await message.answer_video(
                 video=file_input,
                 caption=caption,
                 parse_mode="HTML",
                 supports_streaming=True,
+                **video_params,
                 reply_markup=reply_markup,
             )
             return

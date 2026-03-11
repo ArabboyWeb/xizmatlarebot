@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html
 import os
+import re
+import time
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -36,6 +38,8 @@ from services.token_billing import ensure_balance
 from services.token_pricing import free_reset_hours, free_reset_tokens
 
 router = Router(name="ai_chat")
+AI_STREAM_PREVIEW_LIMIT = 3200
+AI_FINAL_TEXT_LIMIT = 3200
 
 
 class AIChatState(StatesGroup):
@@ -270,6 +274,85 @@ def _model_menu_text(user: dict[str, object]) -> str:
         f"Tanlangan model: <b>{html.escape(_selected_model_label(user))}</b>\n\n"
         "Auto rejim botga modelni o'zi tanlash imkonini beradi."
     )
+
+
+def _trim_ai_text(text: str, *, limit: int) -> str:
+    clean = str(text or "").strip()
+    if len(clean) <= limit:
+        return clean
+    return f"{clean[:limit].rstrip()}..."
+
+
+def _markdown_to_telegram_html(text: str) -> str:
+    normalized = str(text or "").replace("\r\n", "\n").strip()
+    if not normalized:
+        return ""
+
+    code_blocks: dict[str, str] = {}
+
+    def capture_code_block(match: re.Match[str]) -> str:
+        key = f"AICODEBLOCK{len(code_blocks)}TOKEN"
+        code_blocks[key] = f"<pre>{html.escape(match.group(1).strip())}</pre>"
+        return key
+
+    normalized = re.sub(
+        r"```(?:[^\n`]*)\n(.*?)```",
+        capture_code_block,
+        normalized,
+        flags=re.S,
+    )
+    escaped = html.escape(normalized)
+
+    link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+    escaped = link_pattern.sub(
+        lambda match: (
+            f'<a href="{html.escape(match.group(2), quote=True)}">{match.group(1)}</a>'
+        ),
+        escaped,
+    )
+    escaped = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"__([^_\n]+)__", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"~~([^~\n]+)~~", r"<s>\1</s>", escaped)
+    escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", escaped)
+    escaped = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"<i>\1</i>", escaped)
+
+    rendered_lines: list[str] = []
+    for raw_line in escaped.split("\n"):
+        stripped = raw_line.lstrip()
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip()
+            rendered_lines.append(f"<b>{heading}</b>" if heading else "")
+            continue
+        quote_match = re.match(r"^\s*&gt;\s?(.*)$", raw_line)
+        if quote_match:
+            rendered_lines.append(f"<blockquote>{quote_match.group(1)}</blockquote>")
+            continue
+        bullet_match = re.match(r"^(\s*)[-*]\s+(.+)$", raw_line)
+        if bullet_match:
+            rendered_lines.append(f"{bullet_match.group(1)}• {bullet_match.group(2)}")
+            continue
+        rendered_lines.append(raw_line)
+
+    rendered = "\n".join(rendered_lines)
+    for key, value in code_blocks.items():
+        rendered = rendered.replace(key, value)
+    return rendered
+
+
+def _render_stream_preview(text: str) -> str:
+    preview = _trim_ai_text(text, limit=AI_STREAM_PREVIEW_LIMIT)
+    if not preview:
+        return "<i>AI yozmoqda...</i>"
+    return f"{html.escape(preview)}\n\n<i>AI yozmoqda...</i>"
+
+
+def _render_final_answer(text: str, footer: str) -> str:
+    answer_text = _trim_ai_text(text, limit=AI_FINAL_TEXT_LIMIT) or "Javob bo'sh qaytdi."
+    rendered = _markdown_to_telegram_html(answer_text)
+    if not rendered:
+        rendered = html.escape(answer_text)
+    return f"{rendered}{footer}"
 
 
 async def _show_dashboard(
@@ -620,6 +703,32 @@ async def ai_prompt_handler(
         return
 
     history = await ai_store.get_conversation(user_id=user_id)
+    progress_message = await message.answer(
+        "<i>AI yozmoqda...</i>",
+        parse_mode="HTML",
+    )
+    last_stream_text = ""
+    last_stream_at = 0.0
+
+    async def on_stream_text(current_text: str) -> None:
+        nonlocal last_stream_text, last_stream_at
+        clean = str(current_text or "").strip()
+        if not clean or clean == last_stream_text:
+            return
+        now = time.monotonic()
+        if len(clean) - len(last_stream_text) < 120 and (now - last_stream_at) < 0.8:
+            return
+        try:
+            await progress_message.edit_text(
+                _render_stream_preview(clean),
+                parse_mode="HTML",
+            )
+        except TelegramBadRequest as error:
+            if "message is not modified" not in (error.message or "").lower():
+                pass
+        last_stream_text = clean
+        last_stream_at = now
+
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             decision, result = await generate_ai_reply(
@@ -628,6 +737,7 @@ async def ai_prompt_handler(
                 current_plan=str(user.get("current_plan", "free") or "free"),
                 effective_plan=effective_plan,
                 selected_model_alias=selected_model_alias,
+                on_text=on_stream_text,
             )
         credits_used = estimate_credits(
             prompt_tokens=result.prompt_tokens,
@@ -669,11 +779,19 @@ async def ai_prompt_handler(
             ok=False,
             error_text=str(error),
         )
-        await message.answer(
-            f"<b>{_friendly_ai_error(error)}</b>",
-            parse_mode="HTML",
-            reply_markup=ai_dashboard_keyboard(),
-        )
+        error_text = f"<b>{_friendly_ai_error(error)}</b>"
+        try:
+            await progress_message.edit_text(
+                error_text,
+                parse_mode="HTML",
+                reply_markup=ai_dashboard_keyboard(),
+            )
+        except TelegramBadRequest:
+            await message.answer(
+                error_text,
+                parse_mode="HTML",
+                reply_markup=ai_dashboard_keyboard(),
+            )
         return
 
     footer_rows = [
@@ -694,14 +812,19 @@ async def ai_prompt_handler(
         )
     footer = "\n".join(footer_rows)
     answer_text = result.text.strip() or "Javob bo'sh qaytdi."
-    safe_answer = html.escape(answer_text)
-    if len(safe_answer) > 3500:
-        safe_answer = f"{safe_answer[:3500]}..."
-    await message.answer(
-        f"{safe_answer}{footer}",
-        parse_mode="HTML",
-        reply_markup=ai_reply_keyboard(),
-    )
+    final_text = _render_final_answer(answer_text, footer)
+    try:
+        await progress_message.edit_text(
+            final_text,
+            parse_mode="HTML",
+            reply_markup=ai_reply_keyboard(),
+        )
+    except TelegramBadRequest:
+        await message.answer(
+            final_text,
+            parse_mode="HTML",
+            reply_markup=ai_reply_keyboard(),
+        )
     try:
         await log_ai_exchange(
             message.bot,
