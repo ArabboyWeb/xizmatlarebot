@@ -68,14 +68,14 @@ def _selected_model_label(user: dict[str, object]) -> str:
 def _friendly_ai_error(error: Exception) -> str:
     raw = str(error or "").strip().lower()
     if "401" in raw or "user not found" in raw or "provider kaliti" in raw:
-        return "AI hozir sozlanmagan. Admin API kalitini yangilashi kerak."
+        return "🔐 AI hozir sozlanmagan. Admin API kalitini yangilashi kerak."
     if "429" in raw or "rate limit" in raw:
-        return "AI limitga yetdi. Birozdan keyin qayta urinib koring."
+        return "⏳ AI limitga yetdi. Birozdan keyin qayta urinib koring."
     if "timeout" in raw or "timed out" in raw:
-        return "AI javobi kechikdi. Qisqaroq sorov bilan qayta urinib koring."
+        return "⌛ AI javobi kechikdi. Qisqaroq sorov bilan qayta urinib koring."
     if "500" in raw or "502" in raw or "503" in raw or "504" in raw:
-        return "AI server vaqtincha javob bermayapti. Keyinroq urinib koring."
-    return "Sorov hozir bajarilmadi. Keyinroq qayta urinib koring."
+        return "🛠️ AI server vaqtincha javob bermayapti. Keyinroq urinib koring."
+    return "⚠️ Sorov hozir bajarilmadi. Keyinroq qayta urinib koring."
 
 
 async def _safe_edit_or_answer(
@@ -113,11 +113,11 @@ def ai_dashboard_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Yangi chat", callback_data="ai:dashboard"),
-                InlineKeyboardButton(text="Model", callback_data="ai:model_menu"),
+                InlineKeyboardButton(text="✨ Yangi chat", callback_data="ai:dashboard"),
+                InlineKeyboardButton(text="🧠 Model", callback_data="ai:model_menu"),
             ],
-            [InlineKeyboardButton(text="Kontekstni tozalash", callback_data="ai:clear")],
-            [InlineKeyboardButton(text="Orqaga", callback_data="services:back")],
+            [InlineKeyboardButton(text="🧹 Kontekstni tozalash", callback_data="ai:clear")],
+            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="services:back")],
         ]
     )
 
@@ -126,11 +126,11 @@ def ai_reply_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Yana yozish", callback_data="ai:dashboard"),
-                InlineKeyboardButton(text="Model", callback_data="ai:model_menu"),
+                InlineKeyboardButton(text="💬 Yana yozish", callback_data="ai:dashboard"),
+                InlineKeyboardButton(text="🧠 Model", callback_data="ai:model_menu"),
             ],
-            [InlineKeyboardButton(text="Tozalash", callback_data="ai:clear")],
-            [InlineKeyboardButton(text="Orqaga", callback_data="services:back")],
+            [InlineKeyboardButton(text="🧹 Tozalash", callback_data="ai:clear")],
+            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="services:back")],
         ]
     )
 
@@ -143,15 +143,15 @@ def _model_menu_keyboard(user: dict[str, object]) -> InlineKeyboardMarkup:
     for index in range(0, len(options), 2):
         row: list[InlineKeyboardButton] = []
         for alias, label in options[index : index + 2]:
-            prefix = "OK" if selected_model == alias else "Model"
+            prefix = "✅" if selected_model == alias else "🧠"
             row.append(
                 InlineKeyboardButton(
-                    text=f"{prefix}: {label}",
+                    text=f"{prefix} {label}",
                     callback_data=f"ai:model:set:{alias}",
                 )
             )
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="Orqaga", callback_data="ai:dashboard")])
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="ai:dashboard")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -160,30 +160,30 @@ def _dashboard_text(user: dict[str, object]) -> str:
     total_in = int(user.get("total_prompt_tokens", 0) or 0)
     total_out = int(user.get("total_completion_tokens", 0) or 0)
     rows = [
-        "<b>AI Chat</b>",
+        "<b>🤖 AI Chat</b>",
         "",
-        f"Tanlangan model: <b>{html.escape(_selected_model_label(user))}</b>",
-        f"Balans: <b>{token_balance}</b> token",
-        f"Input tokenlar: <b>{total_in}</b>",
-        f"Output tokenlar: <b>{total_out}</b>",
+        f"🧠 Tanlangan model: <b>{html.escape(_selected_model_label(user))}</b>",
+        f"💳 Balans: <b>{token_balance}</b> token",
+        f"📥 Input tokenlar: <b>{total_in}</b>",
+        f"📤 Output tokenlar: <b>{total_out}</b>",
     ]
     rows.append("")
-    rows.append("Savol yuboring. Bot kerak bolsa modelni ozi tanlaydi.")
+    rows.append("💬 Savol yuboring. Bot kerak bolsa modelni ozi tanlaydi.")
     return "\n".join(rows)
 
 
 def _legacy_plans_text() -> str:
     return (
-        "<b>AI tariflari bu bolimdan olib tashlangan.</b>\n"
-        "Premium uchun alohida sahifadan foydalaning."
+        "<b>📚 AI tariflari bu bolimdan olib tashlangan.</b>\n"
+        "⭐ Premium uchun alohida sahifadan foydalaning."
     )
 
 
 def _model_menu_text(user: dict[str, object]) -> str:
     return (
-        "<b>Model tanlash</b>\n\n"
-        f"Tanlangan model: <b>{html.escape(_selected_model_label(user))}</b>\n\n"
-        "Auto rejim botga modelni ozi tanlash imkonini beradi."
+        "<b>🧠 Model tanlash</b>\n\n"
+        f"🧠 Tanlangan model: <b>{html.escape(_selected_model_label(user))}</b>\n\n"
+        "🤖 Auto rejim botga modelni ozi tanlash imkonini beradi."
     )
 
 
@@ -355,7 +355,7 @@ async def ai_plans_callback(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "ai:plan_menu")
 async def ai_plan_menu_callback(callback: CallbackQuery) -> None:
     await callback.answer(
-        "AI tarif tanlovi olib tashlangan. Premium alohida sahifada.",
+        "📚 AI tarif tanlovi olib tashlangan. Premium alohida sahifada.",
         show_alert=True,
     )
 
@@ -363,7 +363,7 @@ async def ai_plan_menu_callback(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("ai:plan:set:"))
 async def ai_plan_set_callback(callback: CallbackQuery) -> None:
     await callback.answer(
-        "AI tarif tanlovi endi ishlatilmaydi.",
+        "📚 AI tarif tanlovi endi ishlatilmaydi.",
         show_alert=True,
     )
 
@@ -409,7 +409,7 @@ async def ai_model_set_callback(
         full_name=full_name,
         selected_model=selected_model,
     )
-    await callback.answer("Model yangilandi")
+    await callback.answer("✅ Model yangilandi")
     await _show_dashboard(
         callback,
         ai_store=ai_store,
@@ -465,7 +465,7 @@ async def ai_diag_command(
         )
         await message.answer(
             (
-                "<b>AI diagnostika</b>\n"
+                "<b>🩺 AI diagnostika</b>\n"
                 f"Status: <b>OK</b>\n"
                 f"Model: <code>{html.escape(result.model)}</code>\n"
                 f"Route: <code>{html.escape(decision.route)}</code>"
@@ -475,7 +475,7 @@ async def ai_diag_command(
     except Exception as error:  # noqa: BLE001
         await message.answer(
             (
-                "<b>AI diagnostika</b>\n"
+                "<b>🩺 AI diagnostika</b>\n"
                 f"Status: <b>Xato</b>\n"
                 f"Sabab: <code>{html.escape(str(error)[:350])}</code>"
             ),
@@ -509,7 +509,7 @@ async def ai_clear_callback(
     user_id, _, _ = _user_identity(callback)
     await ai_store.clear_conversation(user_id=user_id)
     await state.set_state(AIChatState.waiting_prompt)
-    await callback.answer("Kontekst tozalandi")
+    await callback.answer("🧹 Kontekst tozalandi")
     user_id, username, full_name = _user_identity(callback)
     await _show_dashboard(
         callback,
@@ -543,7 +543,7 @@ async def ai_prompt_handler(
         if token_balance <= 0:
             await message.answer(
                 (
-                    "<b>Token tugagan</b>\n"
+                    "<b>⛔ Token tugagan</b>\n"
                     f"Keyingi refillgacha taxminan <b>{wait_seconds}</b> soniya qoldi."
                 ),
                 parse_mode="HTML",
@@ -552,7 +552,7 @@ async def ai_prompt_handler(
         else:
             await message.answer(
                 (
-                    "<b>Limit kutish rejimi</b>\n"
+                    "<b>⏳ Limit kutish rejimi</b>\n"
                     f"Keyingi AI sorov uchun <b>{wait_seconds}</b> soniya kuting."
                 ),
                 parse_mode="HTML",
@@ -675,9 +675,9 @@ async def ai_prompt_handler(
         [
             "",
             "",
-            f"Model: <b>{html.escape(model_label(decision.model_alias))}</b>",
-            f"Kredit sarfi: <b>{credits_used}</b>",
-            f"Qolgan token: <b>{int(updated_user.get('token_balance', 0) or 0)}</b>",
+            f"🧠 Model: <b>{html.escape(model_label(decision.model_alias))}</b>",
+            f"📉 Kredit sarfi: <b>{credits_used}</b>",
+            f"💳 Qolgan token: <b>{int(updated_user.get('token_balance', 0) or 0)}</b>",
         ]
     )
     answer_text = result.text.strip() or "Javob bosh qaytdi."
@@ -747,7 +747,7 @@ async def ai_set_plan_command(
     )
     await message.answer(
         (
-            "<b>AI plan yangilandi</b>\n"
+            "<b>✅ AI plan yangilandi</b>\n"
             f"User: <code>{user_id}</code>\n"
             f"Plan: <b>{html.escape(str(updated.get('current_plan', 'free')))}</b>\n"
             f"Token: <b>{int(updated.get('token_balance', 0) or 0)}</b>"
@@ -776,7 +776,7 @@ async def ai_set_credits_command(
     updated = await ai_store.set_user_credits(user_id=user_id, credits=credits)
     await message.answer(
         (
-            "<b>AI kredit yangilandi</b>\n"
+            "<b>✅ AI kredit yangilandi</b>\n"
             f"User: <code>{user_id}</code>\n"
             f"Qolgan kredit: <b>{int(updated.get('token_balance', 0) or 0)}</b>"
         ),
@@ -787,6 +787,6 @@ async def ai_set_credits_command(
 @router.message(AIChatState.waiting_prompt)
 async def ai_fallback_handler(message: Message) -> None:
     await message.answer(
-        "Savolni oddiy matn korinishida yuboring.",
+        "💬 Savolni oddiy matn korinishida yuboring.",
         reply_markup=ai_dashboard_keyboard(),
     )
