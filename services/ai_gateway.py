@@ -10,6 +10,7 @@ from typing import Any
 
 import aiohttp
 
+from services.load_control import run_with_limit
 from services.token_pricing import ai_min_cost
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -88,14 +89,6 @@ def _free_complex_model() -> str:
     return _env("AI_FREE_MODEL_COMPLEX", "qwen/qwen3-vl-235b-a22b-thinking")
 
 
-def _premium_simple_model() -> str:
-    return _env("AI_PREMIUM_MODEL_SIMPLE", "openai/gpt-5-mini")
-
-
-def _premium_complex_model() -> str:
-    return _env("AI_PREMIUM_MODEL_COMPLEX", "x-ai/grok-4.1-fast")
-
-
 def plan_level(plan: str) -> int:
     return PLAN_LEVELS.get((plan or "free").strip().lower(), 0)
 
@@ -125,16 +118,12 @@ def _manual_model_specs() -> dict[str, tuple[str, str, int, str]]:
     return {
         "free_glm": ("openrouter", _free_simple_model(), 1, "GLM-4.5 Air Free"),
         "free_qwen": ("openrouter", _free_complex_model(), 1, "Qwen 3 VL Thinking"),
-        "premium_mini": ("openrouter", _premium_simple_model(), 1, "GPT-5 Mini"),
-        "premium_grok": ("openrouter", _premium_complex_model(), 2, "Grok 4.1 Fast"),
     }
 
 
 def allowed_model_aliases_for_plan(plan: str) -> list[str]:
-    normalized = (plan or "free").strip().lower()
-    if normalized == "free":
-        return ["free_glm", "free_qwen"]
-    return ["premium_mini", "premium_grok"]
+    _ = (plan or "free").strip().lower()
+    return ["free_glm", "free_qwen"]
 
 
 def model_options_for_plan(plan: str) -> list[tuple[str, str]]:
@@ -334,31 +323,36 @@ def select_route(
         )
 
     if effective_plan == "premium":
+        model = _free_simple_model()
+        model_alias = "free_glm"
+        if complexity in {"standard", "complex"}:
+            model = _free_complex_model()
+            model_alias = "free_qwen"
         if complexity == "simple":
             return AIRouteDecision(
                 provider="openrouter",
-                model=_premium_simple_model(),
+                model=model,
                 route="premium_simple",
                 credit_multiplier=1,
                 effective_plan="premium",
-                model_alias="premium_mini",
+                model_alias=model_alias,
             )
         return AIRouteDecision(
             provider="openrouter",
-            model=_premium_complex_model(),
+            model=model,
             route="premium_complex",
-            credit_multiplier=2,
+            credit_multiplier=1,
             effective_plan="premium",
-            model_alias="premium_grok",
+            model_alias=model_alias,
         )
 
     return AIRouteDecision(
         provider="openrouter",
-        model=_premium_complex_model(),
+        model=_free_complex_model(),
         route="premium_complex",
-        credit_multiplier=2,
+        credit_multiplier=1,
         effective_plan="premium",
-        model_alias="premium_grok",
+        model_alias="free_qwen",
     )
 
 
@@ -633,27 +627,38 @@ async def generate_ai_reply(
     selected_model_alias: str = MODEL_ALIAS_AUTO,
     on_text: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[AIRouteDecision, AIResult]:
-    decision = select_route(
-        user_text,
-        current_plan=current_plan,
-        effective_plan=effective_plan,
-        selected_model_alias=selected_model_alias,
-    )
-    messages = build_messages(history, user_text)
-    if decision.provider == "openrouter":
-        if on_text is not None:
-            result = await _openrouter_completion_stream(
-                messages,
+    async def _run() -> tuple[AIRouteDecision, AIResult]:
+        decision = select_route(
+            user_text,
+            current_plan=current_plan,
+            effective_plan=effective_plan,
+            selected_model_alias=selected_model_alias,
+        )
+        messages = build_messages(history, user_text)
+        if decision.provider == "openrouter":
+            if on_text is not None:
+                result = await _openrouter_completion_stream(
+                    messages,
+                    decision.model,
+                    decision.route,
+                    on_text=on_text,
+                )
+            else:
+                result = await _openrouter_completion(messages, decision.model, decision.route)
+        elif decision.provider == "google":
+            result = await _google_completion(
+                _conversation_text(messages),
                 decision.model,
                 decision.route,
-                on_text=on_text,
             )
         else:
-            result = await _openrouter_completion(messages, decision.model, decision.route)
-    elif decision.provider == "google":
-        result = await _google_completion(_conversation_text(messages), decision.model, decision.route)
-    else:
-        result = await _openai_completion(_conversation_text(messages), decision.model, decision.route)
-    if on_text is not None and decision.provider != "openrouter":
-        await on_text(result.text)
-    return decision, result
+            result = await _openai_completion(
+                _conversation_text(messages),
+                decision.model,
+                decision.route,
+            )
+        if on_text is not None and decision.provider != "openrouter":
+            await on_text(result.text)
+        return decision, result
+
+    return await run_with_limit("ai", _run)

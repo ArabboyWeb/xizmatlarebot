@@ -12,11 +12,13 @@ from aiogram import BaseMiddleware
 from services.ai_gateway import MODEL_ALIAS_AUTO, clamp_selected_plan, effective_selected_plan
 from services.token_pricing import (
     free_daily_tokens,
-    free_reset_hours,
+    free_signup_tokens,
     normalize_plan,
-    premium_monthly_tokens,
+    premium_daily_tokens,
+    premium_upgrade_tokens,
     referral_invitee_bonus,
     referral_inviter_bonus,
+    refill_interval_hours,
     resolve_service_key,
 )
 
@@ -63,17 +65,10 @@ def _read_int(name: str, default: int) -> int:
         return default
 
 
-def _plan_monthly_credits(plan: str) -> int:
-    normalized = normalize_plan(plan)
-    if normalized == "premium":
-        return premium_monthly_tokens()
-    return free_daily_tokens()
-
-
 def _plan_rpm(plan: str) -> int:
     normalized = normalize_plan(plan)
     if normalized == "premium":
-        return max(1, _read_int("AI_PREMIUM_RPM", 30))
+        return max(1, _read_int("AI_PREMIUM_RPM", 60))
     return max(1, _read_int("AI_FREE_RPM", 12))
 
 
@@ -98,19 +93,23 @@ def _normalize_selected_model(value: Any) -> str:
     return normalized or MODEL_ALIAS_AUTO
 
 
-def _next_free_reset(now: datetime | None = None) -> datetime:
-    base = now or _utc_now()
-    interval = timedelta(hours=max(1, free_reset_hours()))
-    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
-    completed_steps = int((base - epoch) // interval)
-    return epoch + interval * (completed_steps + 1)
+def _refill_interval() -> timedelta:
+    return timedelta(hours=max(1, refill_interval_hours()))
 
 
-def _next_monthly_reset(now: datetime | None = None) -> datetime:
+def _next_token_refill(now: datetime | None = None) -> datetime:
     base = now or _utc_now()
-    year = base.year + (1 if base.month == 12 else 0)
-    month = 1 if base.month == 12 else base.month + 1
-    return datetime(year=year, month=month, day=1, tzinfo=timezone.utc)
+    return base + _refill_interval()
+
+
+def _refill_amount(plan: str) -> int:
+    if normalize_plan(plan) == "premium":
+        return premium_daily_tokens()
+    return free_daily_tokens()
+
+
+def _referral_claim_window_minutes() -> int:
+    return max(1, _read_int("BOT_REFERRAL_CLAIM_WINDOW_MINUTES", 10))
 
 
 def _complimentary_service_bucket(service_key: str) -> str:
@@ -142,16 +141,20 @@ class AIStore:
     def _default_data(self) -> dict[str, Any]:
         return {
             "users": {},
+            "premium_requests": {},
+            "premium_request_sequence": 0,
         }
 
     async def startup(self) -> None:
         if self.database_url:
             if asyncpg is None:
                 raise RuntimeError("asyncpg o'rnatilmagan. AI store ishga tushmadi.")
+            min_size = max(1, _read_int("DB_POOL_MIN_SIZE", 2))
+            max_size = max(min_size, _read_int("DB_POOL_MAX_SIZE", 20))
             self._pool = await asyncpg.create_pool(
                 dsn=self.database_url,
-                min_size=1,
-                max_size=5,
+                min_size=min_size,
+                max_size=max_size,
                 command_timeout=60,
             )
             await self._ensure_schema()
@@ -174,7 +177,7 @@ class AIStore:
             current_plan TEXT NOT NULL DEFAULT 'free',
             selected_plan TEXT NOT NULL DEFAULT 'auto',
             selected_model TEXT NOT NULL DEFAULT 'auto',
-            token_balance BIGINT NOT NULL DEFAULT 20,
+            token_balance BIGINT NOT NULL DEFAULT 100,
             free_requests_used BIGINT NOT NULL DEFAULT 0,
             free_reset_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             reset_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -191,6 +194,28 @@ class AIStore:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS premium_requests (
+            request_id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            username TEXT NOT NULL DEFAULT '',
+            full_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            screenshot_file_id TEXT NOT NULL DEFAULT '',
+            screenshot_file_unique_id TEXT NOT NULL DEFAULT '',
+            screenshot_type TEXT NOT NULL DEFAULT '',
+            submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            reviewed_at TIMESTAMPTZ,
+            reviewed_by BIGINT,
+            reviewer_note TEXT NOT NULL DEFAULT '',
+            admin_message_refs JSONB NOT NULL DEFAULT '[]'::jsonb
+        );
+        CREATE INDEX IF NOT EXISTS idx_premium_requests_user_id
+            ON premium_requests (user_id);
+        CREATE INDEX IF NOT EXISTS idx_premium_requests_status_submitted
+            ON premium_requests (status, submitted_at DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_premium_requests_active_user
+            ON premium_requests (user_id)
+            WHERE status = 'pending';
         """
         async with self._pool.acquire() as connection:
             await connection.execute(schema_sql)
@@ -221,6 +246,12 @@ class AIStore:
             await connection.execute(
                 "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS lifetime_tokens_spent BIGINT NOT NULL DEFAULT 0;"
             )
+            await connection.execute(
+                "ALTER TABLE premium_requests ADD COLUMN IF NOT EXISTS reviewer_note TEXT NOT NULL DEFAULT '';"
+            )
+            await connection.execute(
+                "ALTER TABLE premium_requests ADD COLUMN IF NOT EXISTS admin_message_refs JSONB NOT NULL DEFAULT '[]'::jsonb;"
+            )
 
     async def _ensure_loaded(self) -> None:
         if self._loaded:
@@ -238,6 +269,10 @@ class AIStore:
             if not isinstance(self._data, dict):
                 self._data = self._default_data()
             self._data.setdefault("users", {})
+            self._data.setdefault("premium_requests", {})
+            self._data["premium_request_sequence"] = int(
+                self._data.get("premium_request_sequence", 0) or 0
+            )
             self._data.pop("usage_history", None)
             self._loaded = True
 
@@ -258,6 +293,8 @@ class AIStore:
         full_name: str,
     ) -> dict[str, Any]:
         now = _utc_now()
+        next_refill = _next_token_refill(now)
+        signup_tokens = free_signup_tokens()
         return {
             "user_id": int(user_id),
             "username": username,
@@ -265,10 +302,10 @@ class AIStore:
             "current_plan": "free",
             "selected_plan": MODEL_ALIAS_AUTO,
             "selected_model": MODEL_ALIAS_AUTO,
-            "token_balance": _free_reset_tokens(),
+            "token_balance": signup_tokens,
             "free_requests_used": 0,
-            "free_reset_date": _iso(_next_free_reset(now)),
-            "reset_date": _iso(_next_free_reset(now)),
+            "free_reset_date": _iso(next_refill),
+            "reset_date": _iso(next_refill),
             "last_request_at": "",
             "total_prompt_tokens": 0,
             "total_completion_tokens": 0,
@@ -276,8 +313,8 @@ class AIStore:
             "referral_count": 0,
             "referral_bonus_claimed": False,
             "free_media_trial_used": False,
-            "free_media_trial_cycle_end": _iso(_next_free_reset(now)),
-            "lifetime_tokens_earned": 0,
+            "free_media_trial_cycle_end": _iso(next_refill),
+            "lifetime_tokens_earned": signup_tokens,
             "lifetime_tokens_spent": 0,
             "created_at": _iso(now),
             "updated_at": _iso(now),
@@ -304,34 +341,40 @@ class AIStore:
         user["selected_model"] = _normalize_selected_model(
             user.get("selected_model", MODEL_ALIAS_AUTO)
         )
-
-        free_reset_date = _parse_dt(user.get("free_reset_date"))
-        if current_plan == "free":
-            next_free_reset = _next_free_reset(now)
-            if free_reset_date > next_free_reset:
-                free_reset_date = next_free_reset
-                user["free_reset_date"] = _iso(free_reset_date)
-        if now >= free_reset_date:
-            user["free_requests_used"] = 0
-            free_reset_date = _next_free_reset(now)
-            user["free_reset_date"] = _iso(free_reset_date)
-            if current_plan == "free":
-                user["token_balance"] = max(
-                    int(user.get("token_balance", 0) or 0),
-                    _free_reset_tokens(),
+        token_balance = max(0, int(user.get("token_balance", 0) or 0))
+        lifetime_tokens_earned = max(0, int(user.get("lifetime_tokens_earned", 0) or 0))
+        refill_default = _next_token_refill(now)
+        reset_raw = user.get("reset_date", "")
+        free_reset_raw = user.get("free_reset_date", "")
+        if current_plan == "premium":
+            refill_at = (
+                _parse_dt(reset_raw)
+                if str(reset_raw or "").strip()
+                else (
+                    _parse_dt(free_reset_raw)
+                    if str(free_reset_raw or "").strip()
+                    else refill_default
                 )
-                user["reset_date"] = _iso(free_reset_date)
-
-        reset_date = _parse_dt(user.get("reset_date"))
-        if current_plan == "free":
-            if reset_date != free_reset_date:
-                user["reset_date"] = _iso(free_reset_date)
-        elif now >= reset_date:
-            user["token_balance"] = max(
-                int(user.get("token_balance", 0) or 0),
-                _plan_monthly_credits(current_plan),
             )
-            user["reset_date"] = _iso(_next_monthly_reset(now))
+        else:
+            refill_at = (
+                _parse_dt(free_reset_raw)
+                if str(free_reset_raw or "").strip()
+                else (
+                    _parse_dt(reset_raw)
+                    if str(reset_raw or "").strip()
+                    else refill_default
+                )
+            )
+        if now >= refill_at:
+            token_balance += _refill_amount(current_plan)
+            lifetime_tokens_earned += _refill_amount(current_plan)
+            user["free_requests_used"] = 0
+            refill_at = _next_token_refill(now)
+        user["token_balance"] = token_balance
+        user["lifetime_tokens_earned"] = lifetime_tokens_earned
+        user["free_reset_date"] = _iso(refill_at)
+        user["reset_date"] = _iso(refill_at)
 
         user["referrer_id"] = int(user.get("referrer_id", 0) or 0)
         user["referral_count"] = max(0, int(user.get("referral_count", 0) or 0))
@@ -342,9 +385,6 @@ class AIStore:
             user["free_media_trial_used"] = False
         else:
             user["free_media_trial_used"] = bool(user.get("free_media_trial_used", False))
-        user["lifetime_tokens_earned"] = max(
-            0, int(user.get("lifetime_tokens_earned", 0) or 0)
-        )
         user["lifetime_tokens_spent"] = max(
             0, int(user.get("lifetime_tokens_spent", 0) or 0)
         )
@@ -407,10 +447,11 @@ class AIStore:
                         free_requests_used,
                         free_reset_date,
                         reset_date,
+                        lifetime_tokens_earned,
                         created_at,
                         updated_at
                     )
-                    VALUES ($1, $2, $3, 'free', $4, 0, $5, $5, NOW(), NOW())
+                    VALUES ($1, $2, $3, 'free', $4, 0, $5, $5, $4, NOW(), NOW())
                     ON CONFLICT (user_id) DO UPDATE SET
                         username = CASE
                             WHEN EXCLUDED.username <> '' THEN EXCLUDED.username
@@ -426,8 +467,8 @@ class AIStore:
                     int(user_id),
                     username,
                     full_name,
-                    _free_reset_tokens(),
-                    _next_free_reset(),
+                    free_signup_tokens(),
+                    _next_token_refill(),
                 )
                 if row is None:
                     raise RuntimeError("AI foydalanuvchi yozuvi yaratilmadi.")
@@ -451,91 +492,63 @@ class AIStore:
         current_plan = normalize_plan(current_plan)
         token_balance = int(row["token_balance"] or 0)
         free_requests_used = int(row["free_requests_used"] or 0)
-        free_reset_date = _parse_dt(row["free_reset_date"])
-        reset_date = _parse_dt(row["reset_date"])
-
-        if current_plan == "free":
-            next_free_reset = _next_free_reset(now)
-            if free_reset_date > next_free_reset:
-                free_reset_date = next_free_reset
-                reset_date = next_free_reset
-                await connection.execute(
-                    """
-                    UPDATE ai_users
-                    SET free_reset_date = $2,
-                        reset_date = $2,
-                        updated_at = NOW()
-                    WHERE user_id = $1
-                    """,
-                    int(row["user_id"]),
-                    free_reset_date,
-                )
-
-        if now >= free_reset_date:
-            free_requests_used = 0
-            free_reset_date = _next_free_reset(now)
-            if current_plan == "free":
-                token_balance = max(token_balance, _free_reset_tokens())
-                reset_date = free_reset_date
-                await connection.execute(
-                    """
-                    UPDATE ai_users
-                    SET free_requests_used = 0,
-                        free_reset_date = $2,
-                        token_balance = $3,
-                        reset_date = $2,
-                        updated_at = NOW()
-                    WHERE user_id = $1
-                    """,
-                    int(row["user_id"]),
-                    free_reset_date,
-                    token_balance,
-                )
-            else:
-                await connection.execute(
-                    """
-                    UPDATE ai_users
-                    SET free_requests_used = 0,
-                        free_reset_date = $2,
-                        updated_at = NOW()
-                    WHERE user_id = $1
-                    """,
-                    int(row["user_id"]),
-                    free_reset_date,
-                )
-        elif current_plan == "free" and reset_date != free_reset_date:
-            reset_date = free_reset_date
-            await connection.execute(
-                """
-                UPDATE ai_users
-                SET reset_date = $2,
-                    updated_at = NOW()
-                WHERE user_id = $1
-                """,
-                int(row["user_id"]),
-                reset_date,
+        lifetime_tokens_earned = int(row["lifetime_tokens_earned"] or 0)
+        refill_default = _next_token_refill(now)
+        reset_raw = row["reset_date"]
+        free_reset_raw = row["free_reset_date"]
+        if current_plan == "premium":
+            refill_at = (
+                _parse_dt(reset_raw)
+                if reset_raw
+                else (_parse_dt(free_reset_raw) if free_reset_raw else refill_default)
             )
-        if current_plan != "free" and now >= reset_date:
-            token_balance = max(token_balance, _plan_monthly_credits(current_plan))
-            reset_date = _next_monthly_reset(now)
+        else:
+            refill_at = (
+                _parse_dt(free_reset_raw)
+                if free_reset_raw
+                else (_parse_dt(reset_raw) if reset_raw else refill_default)
+            )
+
+        changed = False
+        if now >= refill_at:
+            refill_amount = _refill_amount(current_plan)
+            token_balance += refill_amount
+            lifetime_tokens_earned += refill_amount
+            free_requests_used = 0
+            refill_at = _next_token_refill(now)
+            changed = True
+
+        if (
+            changed
+            or _iso(_parse_dt(row["free_reset_date"])) != _iso(refill_at)
+            or _iso(_parse_dt(row["reset_date"])) != _iso(refill_at)
+            or int(row["token_balance"] or 0) != token_balance
+            or int(row["lifetime_tokens_earned"] or 0) != lifetime_tokens_earned
+            or int(row["free_requests_used"] or 0) != free_requests_used
+        ):
             await connection.execute(
                 """
                 UPDATE ai_users
-                SET token_balance = $2,
+                SET free_requests_used = $2,
+                    free_reset_date = $3,
                     reset_date = $3,
+                    token_balance = $4,
+                    lifetime_tokens_earned = $5,
                     updated_at = NOW()
                 WHERE user_id = $1
                 """,
                 int(row["user_id"]),
+                free_requests_used,
+                refill_at,
                 token_balance,
-                reset_date,
+                lifetime_tokens_earned,
             )
 
         trial_cycle_end_raw = row["free_media_trial_cycle_end"]
         trial_cycle_end = (
             _iso(_parse_dt(trial_cycle_end_raw)) if trial_cycle_end_raw else ""
         )
-        current_cycle_end = _iso(free_reset_date)
+        current_cycle_end = _iso(refill_at)
         if trial_cycle_end != current_cycle_end:
             await connection.execute(
                 """
@@ -546,7 +559,7 @@ class AIStore:
                 WHERE user_id = $1
                 """,
                 int(row["user_id"]),
-                free_reset_date,
+                refill_at,
             )
 
         final_row = await connection.fetchrow(
@@ -845,22 +858,22 @@ class AIStore:
         normalized_plan = normalize_plan(plan)
         if normalized_plan not in {"free", "premium"}:
             raise ValueError("Plan faqat free yoki premium bo'lishi kerak.")
-        await self.ensure_user(
+        user = await self.ensure_user(
             user_id=user_id,
             username=username,
             full_name=full_name,
         )
         now = _utc_now()
-        if normalized_plan == "free":
-            target_balance = _free_reset_tokens()
-            target_reset = _next_free_reset(now)
-        else:
-            target_balance = (
-                int(credits)
-                if isinstance(credits, int) and credits > 0
-                else _plan_monthly_credits(normalized_plan)
-            )
-            target_reset = _next_monthly_reset(now)
+        balance = max(0, int(user.get("token_balance", 0) or 0))
+        bonus_tokens = (
+            int(credits)
+            if isinstance(credits, int) and credits > 0
+            else (premium_upgrade_tokens() if normalized_plan == "premium" else 0)
+        )
+        target_balance = balance + max(0, bonus_tokens)
+        if normalized_plan == "free" and isinstance(credits, int) and credits >= 0:
+            target_balance = int(credits)
+        target_reset = _next_token_refill(now)
 
         if self._pool is not None:
             async with self._pool.acquire() as connection:
@@ -873,17 +886,18 @@ class AIStore:
                         token_balance = $3,
                         free_requests_used = 0,
                         free_reset_date = $4,
-                        reset_date = $5,
+                        reset_date = $4,
                         free_media_trial_used = FALSE,
                         free_media_trial_cycle_end = $4,
+                        lifetime_tokens_earned = lifetime_tokens_earned + $5,
                         updated_at = NOW()
                     WHERE user_id = $1
                     """,
                     int(user_id),
                     normalized_plan,
                     int(target_balance),
-                    _next_free_reset(now),
                     target_reset,
+                    max(0, bonus_tokens),
                 )
                 row = await connection.fetchrow(
                     "SELECT * FROM ai_users WHERE user_id = $1",
@@ -909,10 +923,13 @@ class AIStore:
             record["selected_model"] = MODEL_ALIAS_AUTO
             record["token_balance"] = int(target_balance)
             record["free_requests_used"] = 0
-            record["free_reset_date"] = _iso(_next_free_reset(now))
+            record["free_reset_date"] = _iso(target_reset)
             record["reset_date"] = _iso(target_reset)
             record["free_media_trial_used"] = False
             record["free_media_trial_cycle_end"] = record["free_reset_date"]
+            record["lifetime_tokens_earned"] = int(
+                record.get("lifetime_tokens_earned", 0) or 0
+            ) + max(0, bonus_tokens)
             record["updated_at"] = _iso(now)
             await self._save_locked()
             return json.loads(json.dumps(record))
@@ -1176,8 +1193,9 @@ class AIStore:
                     if row is None:
                         raise RuntimeError("AI foydalanuvchi topilmadi.")
                     balance = int(row["token_balance"] or 0)
-                    if balance < token_amount:
-                        raise ValueError("Token yetarli emas.")
+                    charged_amount = min(balance, token_amount)
+                    if charged_amount <= 0:
+                        return self._serialize_row(row)
                     await connection.execute(
                         """
                         UPDATE ai_users
@@ -1187,7 +1205,7 @@ class AIStore:
                         WHERE user_id = $1
                         """,
                         int(user_id),
-                        token_amount,
+                        charged_amount,
                     )
                     updated = await connection.fetchrow(
                         "SELECT * FROM ai_users WHERE user_id = $1",
@@ -1204,12 +1222,13 @@ class AIStore:
             if not isinstance(record, dict):
                 raise RuntimeError("AI foydalanuvchi topilmadi.")
             self._normalize_user_locked(record, username=username, full_name=full_name)
-            if int(record.get("token_balance", 0) or 0) < token_amount:
-                raise ValueError("Token yetarli emas.")
-            record["token_balance"] = int(record.get("token_balance", 0) or 0) - token_amount
+            charged_amount = min(int(record.get("token_balance", 0) or 0), token_amount)
+            if charged_amount <= 0:
+                return json.loads(json.dumps(record))
+            record["token_balance"] = int(record.get("token_balance", 0) or 0) - charged_amount
             record["lifetime_tokens_spent"] = int(
                 record.get("lifetime_tokens_spent", 0) or 0
-            ) + token_amount
+            ) + charged_amount
             record["updated_at"] = _iso(_utc_now())
             await self._save_locked()
             return json.loads(json.dumps(record))
@@ -1285,11 +1304,6 @@ class AIStore:
             username=username,
             full_name=full_name,
         )
-        await self.ensure_user(
-            user_id=referrer_id,
-            username="",
-            full_name="",
-        )
 
         if self._pool is not None:
             async with self._pool.acquire() as connection:
@@ -1304,6 +1318,10 @@ class AIStore:
                     )
                     if referred is None or referrer is None:
                         return {"applied": False, "reason": "missing"}
+                    if _utc_now() > _parse_dt(referred["created_at"]) + timedelta(
+                        minutes=_referral_claim_window_minutes()
+                    ):
+                        return {"applied": False, "reason": "expired"}
                     if int(referred["user_id"]) == int(referrer["user_id"]):
                         return {"applied": False, "reason": "self"}
                     if int(referred["referrer_id"] or 0) > 0 or bool(
@@ -1352,6 +1370,10 @@ class AIStore:
                 return {"applied": False, "reason": "missing"}
             self._normalize_user_locked(referred, username=username, full_name=full_name)
             self._normalize_user_locked(referrer, username="", full_name="")
+            if _utc_now() > _parse_dt(referred.get("created_at")) + timedelta(
+                minutes=_referral_claim_window_minutes()
+            ):
+                return {"applied": False, "reason": "expired"}
             if int(referred.get("referrer_id", 0) or 0) > 0 or bool(
                 referred.get("referral_bonus_claimed", False)
             ):
@@ -1376,6 +1398,392 @@ class AIStore:
                 "applied": True,
                 "inviter_bonus": inviter_bonus,
                 "invitee_bonus": invitee_bonus,
+            }
+
+    def _serialize_premium_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "request_id": int(request.get("request_id", 0) or 0),
+            "user_id": int(request.get("user_id", 0) or 0),
+            "username": str(request.get("username", "") or ""),
+            "full_name": str(request.get("full_name", "") or ""),
+            "status": str(request.get("status", "pending") or "pending"),
+            "screenshot_file_id": str(request.get("screenshot_file_id", "") or ""),
+            "screenshot_file_unique_id": str(
+                request.get("screenshot_file_unique_id", "") or ""
+            ),
+            "screenshot_type": str(request.get("screenshot_type", "") or ""),
+            "submitted_at": str(request.get("submitted_at", "") or ""),
+            "reviewed_at": str(request.get("reviewed_at", "") or ""),
+            "reviewed_by": int(request.get("reviewed_by", 0) or 0),
+            "reviewer_note": str(request.get("reviewer_note", "") or ""),
+            "admin_message_refs": list(request.get("admin_message_refs", []) or []),
+        }
+
+    def _serialize_premium_request_row(self, row: Any) -> dict[str, Any]:
+        admin_message_refs = row["admin_message_refs"]
+        if not isinstance(admin_message_refs, list):
+            admin_message_refs = []
+        return {
+            "request_id": int(row["request_id"]),
+            "user_id": int(row["user_id"]),
+            "username": str(row["username"] or ""),
+            "full_name": str(row["full_name"] or ""),
+            "status": str(row["status"] or "pending"),
+            "screenshot_file_id": str(row["screenshot_file_id"] or ""),
+            "screenshot_file_unique_id": str(row["screenshot_file_unique_id"] or ""),
+            "screenshot_type": str(row["screenshot_type"] or ""),
+            "submitted_at": _iso(_parse_dt(row["submitted_at"])),
+            "reviewed_at": (
+                _iso(_parse_dt(row["reviewed_at"])) if row["reviewed_at"] else ""
+            ),
+            "reviewed_by": int(row["reviewed_by"] or 0),
+            "reviewer_note": str(row["reviewer_note"] or ""),
+            "admin_message_refs": admin_message_refs,
+        }
+
+    async def get_active_premium_request(
+        self,
+        *,
+        user_id: int,
+    ) -> dict[str, Any] | None:
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    """
+                    SELECT *
+                    FROM premium_requests
+                    WHERE user_id = $1 AND status = 'pending'
+                    ORDER BY submitted_at DESC
+                    LIMIT 1
+                    """,
+                    int(user_id),
+                )
+            if row is None:
+                return None
+            return self._serialize_premium_request_row(row)
+
+        await self._ensure_loaded()
+        async with self._lock:
+            requests = self._data.setdefault("premium_requests", {})
+            candidates = [
+                self._serialize_premium_request(item)
+                for item in requests.values()
+                if isinstance(item, dict)
+                and int(item.get("user_id", 0) or 0) == int(user_id)
+                and str(item.get("status", "") or "") == "pending"
+            ]
+            if not candidates:
+                return None
+            candidates.sort(key=lambda item: str(item.get("submitted_at", "") or ""), reverse=True)
+            return candidates[0]
+
+    async def list_pending_premium_requests(
+        self,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(50, int(limit)))
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                rows = await connection.fetch(
+                    """
+                    SELECT *
+                    FROM premium_requests
+                    WHERE status = 'pending'
+                    ORDER BY submitted_at DESC
+                    LIMIT $1
+                    """,
+                    safe_limit,
+                )
+            return [self._serialize_premium_request_row(row) for row in rows]
+
+        await self._ensure_loaded()
+        async with self._lock:
+            requests = self._data.setdefault("premium_requests", {})
+            candidates = [
+                self._serialize_premium_request(item)
+                for item in requests.values()
+                if isinstance(item, dict)
+                and str(item.get("status", "") or "") == "pending"
+            ]
+            candidates.sort(key=lambda item: str(item.get("submitted_at", "") or ""), reverse=True)
+            return candidates[:safe_limit]
+
+    async def create_premium_request(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        screenshot_file_id: str,
+        screenshot_file_unique_id: str,
+        screenshot_type: str,
+    ) -> dict[str, Any]:
+        clean_file_id = str(screenshot_file_id or "").strip()
+        clean_unique_id = str(screenshot_file_unique_id or "").strip()
+        clean_type = str(screenshot_type or "").strip().lower()
+        if not clean_file_id or not clean_unique_id:
+            raise ValueError("Screenshot topilmadi.")
+        if clean_type not in {"photo", "document"}:
+            raise ValueError("Screenshot turi noto'g'ri.")
+        user = await self.ensure_user(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+        )
+        if normalize_plan(str(user.get("current_plan", "free") or "free")) == "premium":
+            raise ValueError("Premium allaqachon yoqilgan.")
+        existing = await self.get_active_premium_request(user_id=user_id)
+        if existing is not None:
+            raise ValueError("Sizda allaqachon ko'rib chiqilayotgan so'rov bor.")
+
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                try:
+                    async with connection.transaction():
+                        row = await connection.fetchrow(
+                            """
+                            INSERT INTO premium_requests (
+                                user_id,
+                                username,
+                                full_name,
+                                status,
+                                screenshot_file_id,
+                                screenshot_file_unique_id,
+                                screenshot_type,
+                                submitted_at
+                            )
+                            VALUES ($1, $2, $3, 'pending', $4, $5, $6, NOW())
+                            RETURNING *
+                            """,
+                            int(user_id),
+                            username,
+                            full_name,
+                            clean_file_id,
+                            clean_unique_id,
+                            clean_type,
+                        )
+                except Exception as error:
+                    lowered = str(error or "").lower()
+                    if "unique" in lowered or "idx_premium_requests_active_user" in lowered:
+                        raise ValueError("Sizda allaqachon ko'rib chiqilayotgan so'rov bor.") from error
+                    raise
+                if row is None:
+                    raise RuntimeError("Premium so'rovi saqlanmadi.")
+                return self._serialize_premium_request_row(row)
+
+        await self._ensure_loaded()
+        async with self._lock:
+            requests = self._data.setdefault("premium_requests", {})
+            for item in requests.values():
+                if not isinstance(item, dict):
+                    continue
+                if (
+                    int(item.get("user_id", 0) or 0) == int(user_id)
+                    and str(item.get("status", "") or "") == "pending"
+                ):
+                    raise ValueError("Sizda allaqachon ko'rib chiqilayotgan so'rov bor.")
+            sequence = int(self._data.get("premium_request_sequence", 0) or 0) + 1
+            self._data["premium_request_sequence"] = sequence
+            now = _iso(_utc_now())
+            record = {
+                "request_id": sequence,
+                "user_id": int(user_id),
+                "username": username,
+                "full_name": full_name,
+                "status": "pending",
+                "screenshot_file_id": clean_file_id,
+                "screenshot_file_unique_id": clean_unique_id,
+                "screenshot_type": clean_type,
+                "submitted_at": now,
+                "reviewed_at": "",
+                "reviewed_by": 0,
+                "reviewer_note": "",
+                "admin_message_refs": [],
+            }
+            requests[str(sequence)] = record
+            await self._save_locked()
+            return self._serialize_premium_request(record)
+
+    async def attach_premium_request_admin_message(
+        self,
+        *,
+        request_id: int,
+        chat_id: int,
+        message_id: int,
+    ) -> dict[str, Any] | None:
+        ref = {"chat_id": int(chat_id), "message_id": int(message_id)}
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                async with connection.transaction():
+                    row = await connection.fetchrow(
+                        "SELECT * FROM premium_requests WHERE request_id = $1 FOR UPDATE",
+                        int(request_id),
+                    )
+                    if row is None:
+                        return None
+                    refs = row["admin_message_refs"]
+                    if not isinstance(refs, list):
+                        refs = []
+                    if ref not in refs:
+                        refs.append(ref)
+                        await connection.execute(
+                            """
+                            UPDATE premium_requests
+                            SET admin_message_refs = $2::jsonb
+                            WHERE request_id = $1
+                            """,
+                            int(request_id),
+                            json.dumps(refs, ensure_ascii=False),
+                        )
+                        row = await connection.fetchrow(
+                            "SELECT * FROM premium_requests WHERE request_id = $1",
+                            int(request_id),
+                        )
+                if row is None:
+                    return None
+                return self._serialize_premium_request_row(row)
+
+        await self._ensure_loaded()
+        async with self._lock:
+            requests = self._data.setdefault("premium_requests", {})
+            record = requests.get(str(int(request_id)))
+            if not isinstance(record, dict):
+                return None
+            refs = list(record.get("admin_message_refs", []) or [])
+            if ref not in refs:
+                refs.append(ref)
+                record["admin_message_refs"] = refs
+                await self._save_locked()
+            return self._serialize_premium_request(record)
+
+    async def review_premium_request(
+        self,
+        *,
+        request_id: int,
+        reviewer_id: int,
+        approve: bool,
+        reviewer_note: str = "",
+    ) -> dict[str, Any]:
+        normalized_status = "approved" if approve else "rejected"
+        note = str(reviewer_note or "").strip()
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                async with connection.transaction():
+                    request_row = await connection.fetchrow(
+                        "SELECT * FROM premium_requests WHERE request_id = $1 FOR UPDATE",
+                        int(request_id),
+                    )
+                    if request_row is None:
+                        return {"ok": False, "reason": "missing"}
+                    if str(request_row["status"] or "") != "pending":
+                        return {
+                            "ok": False,
+                            "reason": "processed",
+                            "request": self._serialize_premium_request_row(request_row),
+                        }
+                    await connection.execute(
+                        """
+                        UPDATE premium_requests
+                        SET status = $2,
+                            reviewed_at = NOW(),
+                            reviewed_by = $3,
+                            reviewer_note = $4
+                        WHERE request_id = $1
+                        """,
+                        int(request_id),
+                        normalized_status,
+                        int(reviewer_id),
+                        note,
+                    )
+                    user_row = None
+                    awarded_tokens = 0
+                    if approve:
+                        awarded_tokens = premium_upgrade_tokens()
+                        next_refill = _next_token_refill()
+                        await connection.execute(
+                            """
+                            UPDATE ai_users
+                            SET current_plan = 'premium',
+                                selected_plan = 'auto',
+                                selected_model = 'auto',
+                                token_balance = token_balance + $2,
+                                free_requests_used = 0,
+                                free_reset_date = $3,
+                                reset_date = $3,
+                                free_media_trial_used = FALSE,
+                                free_media_trial_cycle_end = $3,
+                                lifetime_tokens_earned = lifetime_tokens_earned + $2,
+                                updated_at = NOW()
+                            WHERE user_id = $1
+                            """,
+                            int(request_row["user_id"]),
+                            int(awarded_tokens),
+                            next_refill,
+                        )
+                    request_row = await connection.fetchrow(
+                        "SELECT * FROM premium_requests WHERE request_id = $1",
+                        int(request_id),
+                    )
+                    user_row = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1",
+                        int(request_row["user_id"]),
+                    )
+                if request_row is None or user_row is None:
+                    raise RuntimeError("Premium so'rovi ko'rib chiqilmadi.")
+                return {
+                    "ok": True,
+                    "status": normalized_status,
+                    "awarded_tokens": int(awarded_tokens),
+                    "request": self._serialize_premium_request_row(request_row),
+                    "user": self._serialize_row(user_row),
+                }
+
+        await self._ensure_loaded()
+        async with self._lock:
+            requests = self._data.setdefault("premium_requests", {})
+            record = requests.get(str(int(request_id)))
+            if not isinstance(record, dict):
+                return {"ok": False, "reason": "missing"}
+            if str(record.get("status", "") or "") != "pending":
+                return {
+                    "ok": False,
+                    "reason": "processed",
+                    "request": self._serialize_premium_request(record),
+                }
+            users = self._data.setdefault("users", {})
+            user = users.get(str(int(record.get("user_id", 0) or 0)))
+            if not isinstance(user, dict):
+                return {"ok": False, "reason": "missing"}
+            now = _utc_now()
+            awarded_tokens = premium_upgrade_tokens() if approve else 0
+            record["status"] = normalized_status
+            record["reviewed_at"] = _iso(now)
+            record["reviewed_by"] = int(reviewer_id)
+            record["reviewer_note"] = note
+            self._normalize_user_locked(user, username="", full_name="")
+            if approve:
+                next_refill = _next_token_refill(now)
+                user["current_plan"] = "premium"
+                user["selected_plan"] = MODEL_ALIAS_AUTO
+                user["selected_model"] = MODEL_ALIAS_AUTO
+                user["token_balance"] = int(user.get("token_balance", 0) or 0) + awarded_tokens
+                user["free_requests_used"] = 0
+                user["free_reset_date"] = _iso(next_refill)
+                user["reset_date"] = _iso(next_refill)
+                user["free_media_trial_used"] = False
+                user["free_media_trial_cycle_end"] = _iso(next_refill)
+                user["lifetime_tokens_earned"] = int(
+                    user.get("lifetime_tokens_earned", 0) or 0
+                ) + awarded_tokens
+                user["updated_at"] = _iso(now)
+            await self._save_locked()
+            return {
+                "ok": True,
+                "status": normalized_status,
+                "awarded_tokens": int(awarded_tokens),
+                "request": self._serialize_premium_request(record),
+                "user": json.loads(json.dumps(user)),
             }
 
 

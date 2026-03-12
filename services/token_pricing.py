@@ -42,16 +42,12 @@ def _economy_defaults() -> dict[str, int]:
     return {
         "referral_inviter_bonus": max(1, _read_int("BOT_REFERRAL_INVITER_BONUS", 40)),
         "referral_invitee_bonus": max(1, _read_int("BOT_REFERRAL_INVITEE_BONUS", 20)),
-        "free_reset_tokens": max(1, _read_int("BOT_FREE_RESET_TOKENS", 20)),
-        "free_reset_hours": max(1, _read_int("BOT_FREE_RESET_HOURS", 12)),
     }
 
 
 _ECONOMY_MINIMUMS: dict[str, int] = {
     "referral_inviter_bonus": 1,
     "referral_invitee_bonus": 1,
-    "free_reset_tokens": 1,
-    "free_reset_hours": 1,
 }
 
 
@@ -215,25 +211,39 @@ def normalize_plan(plan: str) -> str:
 
 
 def free_reset_tokens() -> int:
-    return int(economy_settings()["free_reset_tokens"])
+    return free_daily_tokens()
 
 
 def free_reset_hours() -> int:
-    return int(economy_settings()["free_reset_hours"])
+    return refill_interval_hours()
 
 
 def free_daily_tokens() -> int:
-    return free_reset_tokens()
+    return 20
 
 
-def premium_monthly_tokens() -> int:
-    return max(
-        800,
-        _read_int(
-            "BOT_PREMIUM_MONTHLY_TOKENS",
-            _read_int("AI_PREMIUM_MONTHLY_CREDITS", 1800),
-        ),
-    )
+def free_signup_tokens() -> int:
+    return 100
+
+
+def premium_daily_tokens() -> int:
+    return 100
+
+
+def premium_upgrade_tokens() -> int:
+    return 1000
+
+
+def refill_interval_hours() -> int:
+    return 24
+
+
+def premium_price_uzs() -> int:
+    return 15_000
+
+
+def premium_card_number() -> str:
+    return "5614 6812 8153 6858"
 
 
 def referral_inviter_bonus() -> int:

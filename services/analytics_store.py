@@ -30,6 +30,16 @@ def _row_ts(value: Any) -> str:
     return str(value or "")
 
 
+def _read_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 class AnalyticsStore:
     def __init__(
         self,
@@ -68,10 +78,12 @@ class AnalyticsStore:
         if self.database_url:
             if asyncpg is None:
                 raise RuntimeError("asyncpg o'rnatilmagan. requirements ni yangilang.")
+            min_size = max(1, _read_int("DB_POOL_MIN_SIZE", 2))
+            max_size = max(min_size, _read_int("DB_POOL_MAX_SIZE", 20))
             self._pool = await asyncpg.create_pool(
                 dsn=self.database_url,
-                min_size=1,
-                max_size=5,
+                min_size=min_size,
+                max_size=max_size,
                 command_timeout=60,
             )
             await self._ensure_schema()

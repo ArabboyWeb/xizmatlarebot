@@ -21,6 +21,7 @@ try:
 except Exception:  # pragma: no cover
     yt_dlp = None
 
+from services.load_control import run_in_thread_with_limit
 from services.saver_client import (
     DownloadedFile,
     DEFAULT_USER_AGENT,
@@ -404,7 +405,8 @@ async def download_social_video(
             return await _download_tiktok_via_tikwm(url, max_bytes=limit)
         except Exception as tikwm_error:
             try:
-                return await asyncio.to_thread(
+                return await run_in_thread_with_limit(
+                    "download",
                     _download_social_video_sync,
                     url,
                     max_bytes=limit,
@@ -428,7 +430,8 @@ async def download_social_video(
                 raise RuntimeError(
                     "TikTok videoni yuklab bo'lmadi. Public video link yuboring."
                 ) from ytdlp_error
-    return await asyncio.to_thread(
+    return await run_in_thread_with_limit(
+        "download",
         _download_social_video_sync,
         url,
         max_bytes=limit,

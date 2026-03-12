@@ -18,6 +18,7 @@ def is_group_chat(target: object) -> bool:
 
 
 def command_menu_text(*, is_admin: bool = False) -> str:
+    _ = is_admin
     rows = [
         "<b>Group command mode</b>",
         "",
@@ -46,8 +47,6 @@ def command_menu_text(*, is_admin: bool = False) -> str:
         "/imgjpg - Image -> JPG",
         "/imgwebp - Image -> WEBP",
     ]
-    if is_admin:
-        rows.extend(["", "/admin - admin panel"])
     rows.extend(
         [
             "",

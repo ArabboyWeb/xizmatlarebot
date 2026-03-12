@@ -28,6 +28,7 @@ from services.converter_tools import (
     image_to_pdf_sync,
     pdf_to_images_zip_sync,
 )
+from services.load_control import run_in_thread_with_limit
 from services.token_billing import ensure_balance
 
 router = Router(name="converter")
@@ -292,7 +293,7 @@ async def _handle_image_to_pdf(message: Message, ai_store: AIStore) -> None:
         source = await _download_image(message, work_dir)
         output = work_dir / f"{source.stem}.pdf"
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-            await asyncio.to_thread(image_to_pdf_sync, source, output)
+            await run_in_thread_with_limit("converter", image_to_pdf_sync, source, output)
         await message.answer_document(
             document=FSInputFile(output),
             caption="Rasm PDF formatiga konvert qilindi.",
@@ -335,7 +336,8 @@ async def _handle_pdf_to_images(message: Message, ai_store: AIStore) -> None:
         source = await _download_document(message, work_dir, {".pdf"})
         output = work_dir / f"{source.stem}_images.zip"
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-            pages = await asyncio.to_thread(
+            pages = await run_in_thread_with_limit(
+                "converter",
                 pdf_to_images_zip_sync, source, output, MAX_PDF_PAGES
             )
         await message.answer_document(
@@ -384,7 +386,13 @@ async def _handle_image_format(
         source = await _download_image(message, work_dir)
         output = work_dir / f"{source.stem}.{target}"
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-            await asyncio.to_thread(image_format_sync, source, output, target)
+            await run_in_thread_with_limit(
+                "converter",
+                image_format_sync,
+                source,
+                output,
+                target,
+            )
         await message.answer_document(
             document=FSInputFile(output),
             caption=f"Rasm {target.upper()} formatiga konvert qilindi.",

@@ -12,11 +12,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from services.ai_store import AIStore
 from services.analytics_store import AnalyticsStore
+from services.group_command_mode import is_group_chat
 from services.token_pricing import (
     ServiceTariff,
     economy_settings,
     list_tariffs,
+    premium_daily_tokens,
+    premium_price_uzs,
+    premium_upgrade_tokens,
     reset_economy_setting,
     reset_service_tariff,
     service_tariff,
@@ -24,6 +29,7 @@ from services.token_pricing import (
     set_service_tariff_cost,
     tariff_categories,
 )
+from ui.premium import premium_admin_list_keyboard, premium_admin_request_keyboard
 
 router = Router(name="admin")
 DEFAULT_ADMIN_IDS = {1392745444}
@@ -44,15 +50,11 @@ TOKEN_CATEGORY_LABELS = {
 ECONOMY_SETTING_LABELS = {
     "referral_inviter_bonus": "Taklif qiluvchiga bonus",
     "referral_invitee_bonus": "Yangi user bonusi",
-    "free_reset_tokens": "Free refill token",
-    "free_reset_hours": "Free refill soat",
 }
 
 ECONOMY_SETTING_DELTAS = {
     "referral_inviter_bonus": (-10, -5, 5, 10),
     "referral_invitee_bonus": (-10, -5, 5, 10),
-    "free_reset_tokens": (-10, -5, 5, 10),
-    "free_reset_hours": (-6, -1, 1, 6),
 }
 
 
@@ -90,6 +92,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
                     callback_data="admin:economy",
                 ),
             ],
+            [InlineKeyboardButton(text="Premium so'rovlari", callback_data="admin:premium")],
             [InlineKeyboardButton(text="Reklama yuborish", callback_data="admin:broadcast")],
             [InlineKeyboardButton(text="Yangilash", callback_data="admin:panel")],
         ]
@@ -330,6 +333,50 @@ def _fmt_service_name(key: str) -> str:
     return mapping.get(key, key.replace("_", " ").title())
 
 
+def _premium_contact_url(username: str, user_id: int) -> str:
+    clean_username = str(username or "").strip().lstrip("@")
+    if clean_username:
+        return f"https://t.me/{clean_username}"
+    if int(user_id) > 0:
+        return f"tg://user?id={int(user_id)}"
+    return ""
+
+
+def _premium_overview_text(requests: list[dict[str, object]]) -> str:
+    rows = [
+        "<b>Premium so'rovlari</b>",
+        f"Narx: <b>{premium_price_uzs():,} UZS</b>",
+        f"Faollashganda: <b>{premium_upgrade_tokens()}</b> token",
+        f"Kunlik refill: <b>{premium_daily_tokens()}</b> token / 24 soat",
+        "",
+    ]
+    if not requests:
+        rows.append("Pending so'rovlar yo'q.")
+    else:
+        rows.append(f"Pending: <b>{len(requests)}</b> ta")
+        rows.append("Ko'rish uchun pastdagi foydalanuvchini tanlang.")
+    return "\n".join(rows)
+
+
+def _premium_request_text(request: dict[str, object]) -> str:
+    user_id = int(request.get("user_id", 0) or 0)
+    username = str(request.get("username", "") or "").strip()
+    full_name = str(request.get("full_name", "") or "").strip()
+    submitted_at = str(request.get("submitted_at", "") or "").replace("T", " ")[:16]
+    label = full_name or f"User {user_id}"
+    if username:
+        label = f"{label} (@{username})"
+    return (
+        "<b>Premium so'rovi</b>\n"
+        f"So'rov: <b>#{int(request.get('request_id', 0) or 0)}</b>\n"
+        f"Foydalanuvchi: <b>{html.escape(label)}</b>\n"
+        f"ID: <code>{user_id}</code>\n"
+        f"Holat: <b>{html.escape(str(request.get('status', 'pending') or 'pending').title())}</b>\n"
+        f"Yuborilgan: <b>{html.escape(submitted_at)}</b>\n"
+        f"Skrin turi: <b>{html.escape(str(request.get('screenshot_type', '') or ''))}</b>"
+    )
+
+
 def _token_overview_text() -> str:
     rows = [
         "<b>Token tariflar paneli</b>",
@@ -379,16 +426,13 @@ def _token_service_text(tariff: ServiceTariff) -> str:
 def _economy_overview_text() -> str:
     settings = economy_settings()
     rows = [
-        "<b>Referral & reset sozlamalari</b>",
-        "Referral bonuslari va free refill parametrlarini shu yerdan boshqaring.",
+        "<b>Referral sozlamalari</b>",
+        "Referral bonuslarini shu yerdan boshqaring.",
         "",
     ]
     for key, label in ECONOMY_SETTING_LABELS.items():
         value = int(settings.get(key, 0) or 0)
-        suffix = " soat" if key == "free_reset_hours" else " token"
-        if key.startswith("referral_"):
-            suffix = " token"
-        rows.append(f"- <b>{html.escape(label)}</b>: <b>{value}</b>{suffix}")
+        rows.append(f"- <b>{html.escape(label)}</b>: <b>{value}</b> token")
     rows.append("")
     rows.append("Tahrirlash uchun parametrni tanlang.")
     return "\n".join(rows)
@@ -398,20 +442,15 @@ def _economy_item_text(key: str) -> str:
     settings = economy_settings()
     label = ECONOMY_SETTING_LABELS.get(key, key.replace("_", " ").title())
     value = int(settings.get(key, 0) or 0)
-    suffix = " soat" if key == "free_reset_hours" else " token"
-    if key.startswith("referral_"):
-        suffix = " token"
     details = {
         "referral_inviter_bonus": "Do'st taklif qilgan userga beriladi.",
         "referral_invitee_bonus": "Botga link orqali kirgan yangi userga beriladi.",
-        "free_reset_tokens": "Free user balansini har intervalda shu qiymatgacha tiklaydi.",
-        "free_reset_hours": "Free user refill intervali.",
     }
     return (
-        "<b>Referral & reset tahriri</b>\n"
+        "<b>Referral tahriri</b>\n"
         f"Parametr: <b>{html.escape(label)}</b>\n"
         f"Key: <code>{html.escape(key)}</code>\n"
-        f"Joriy qiymat: <b>{value}</b>{suffix}\n\n"
+        f"Joriy qiymat: <b>{value}</b> token\n\n"
         f"{html.escape(details.get(key, ''))}\n\n"
         "Pastdagi tugmalar bilan qiymatni o'zgartiring."
     )
@@ -680,6 +719,8 @@ async def admin_entry_handler(
     state: FSMContext,
     analytics_store: AnalyticsStore,
 ) -> None:
+    if is_group_chat(message):
+        return
     user_id = message.from_user.id if message.from_user else None
     if not is_admin_user_id(user_id):
         await message.answer("Admin panel siz uchun yopiq.")
@@ -699,6 +740,9 @@ async def admin_panel_callback(
     state: FSMContext,
     analytics_store: AnalyticsStore,
 ) -> None:
+    if is_group_chat(callback):
+        await callback.answer("Admin panel faqat private chatda ishlaydi.", show_alert=True)
+        return
     if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
@@ -730,6 +774,58 @@ async def admin_users_callback(
     await callback.answer()
     users = await analytics_store.recent_users()
     await _safe_edit(callback, _users_text(users), admin_keyboard())
+
+
+@router.callback_query(F.data == "admin:premium")
+async def admin_premium_callback(
+    callback: CallbackQuery,
+    ai_store: AIStore,
+) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    await callback.answer()
+    requests = await ai_store.list_pending_premium_requests(limit=10)
+    await _safe_edit(
+        callback,
+        _premium_overview_text(requests),
+        premium_admin_list_keyboard(requests),
+    )
+
+
+@router.callback_query(F.data.startswith("admin:premium:item:"))
+async def admin_premium_item_callback(
+    callback: CallbackQuery,
+    ai_store: AIStore,
+) -> None:
+    if not is_admin_user_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Ruxsat yo'q", show_alert=True)
+        return
+    try:
+        request_id = int(str(callback.data or "").rsplit(":", 1)[-1])
+    except ValueError:
+        await callback.answer("So'rov topilmadi", show_alert=True)
+        return
+    request = None
+    for item in await ai_store.list_pending_premium_requests(limit=50):
+        if int(item.get("request_id", 0) or 0) == request_id:
+            request = item
+            break
+    if request is None:
+        await callback.answer("So'rov topilmadi yoki allaqachon ko'rilgan", show_alert=True)
+        return
+    await callback.answer()
+    await _safe_edit(
+        callback,
+        _premium_request_text(request),
+        premium_admin_request_keyboard(
+            request_id=request_id,
+            contact_url=_premium_contact_url(
+                str(request.get("username", "") or ""),
+                int(request.get("user_id", 0) or 0),
+            ),
+        ),
+    )
 
 
 @router.callback_query(F.data == "admin:broadcast")

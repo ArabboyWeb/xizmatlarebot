@@ -7,6 +7,8 @@ from pathlib import Path
 import fitz
 from PIL import Image
 
+from services.load_control import run_with_limit
+
 
 def soffice_binary() -> str | None:
     for name in ("soffice", "libreoffice"):
@@ -19,47 +21,50 @@ def soffice_binary() -> str | None:
 async def convert_with_soffice(
     input_path: Path, target_ext: str, timeout_seconds: int
 ) -> Path:
-    soffice = soffice_binary()
-    if not soffice:
-        raise RuntimeError(
-            "LibreOffice topilmadi. Word/PDF konvert uchun LibreOffice o'rnatilishi kerak."
+    async def _run() -> Path:
+        soffice = soffice_binary()
+        if not soffice:
+            raise RuntimeError(
+                "LibreOffice topilmadi. Word/PDF konvert uchun LibreOffice o'rnatilishi kerak."
+            )
+
+        convert_arg = "pdf" if target_ext == "pdf" else "docx"
+        process = await asyncio.create_subprocess_exec(
+            soffice,
+            "--headless",
+            "--convert-to",
+            convert_arg,
+            "--outdir",
+            str(input_path.parent),
+            str(input_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
 
-    convert_arg = "pdf" if target_ext == "pdf" else "docx"
-    process = await asyncio.create_subprocess_exec(
-        soffice,
-        "--headless",
-        "--convert-to",
-        convert_arg,
-        "--outdir",
-        str(input_path.parent),
-        str(input_path),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+        try:
+            _, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            with contextlib.suppress(Exception):
+                await process.communicate()
+            raise TimeoutError("Konvertatsiya vaqti tugadi (timeout).")
 
-    try:
-        _, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=timeout_seconds
-        )
-    except asyncio.TimeoutError:
-        process.kill()
-        with contextlib.suppress(Exception):
-            await process.communicate()
-        raise TimeoutError("Konvertatsiya vaqti tugadi (timeout).")
+        if process.returncode != 0:
+            error_text = (stderr or b"").decode("utf-8", errors="ignore").strip()
+            raise RuntimeError(error_text or "LibreOffice konvertatsiya xatosi.")
 
-    if process.returncode != 0:
-        error_text = (stderr or b"").decode("utf-8", errors="ignore").strip()
-        raise RuntimeError(error_text or "LibreOffice konvertatsiya xatosi.")
+        output_path = input_path.with_suffix(f".{target_ext}")
+        if output_path.exists():
+            return output_path
 
-    output_path = input_path.with_suffix(f".{target_ext}")
-    if output_path.exists():
-        return output_path
+        candidates = sorted(input_path.parent.glob(f"{input_path.stem}*.{target_ext}"))
+        if candidates:
+            return candidates[0]
+        raise RuntimeError("Konvertatsiya fayli topilmadi.")
 
-    candidates = sorted(input_path.parent.glob(f"{input_path.stem}*.{target_ext}"))
-    if candidates:
-        return candidates[0]
-    raise RuntimeError("Konvertatsiya fayli topilmadi.")
+    return await run_with_limit("converter", _run)
 
 
 def image_to_pdf_sync(image_path: Path, output_path: Path) -> None:

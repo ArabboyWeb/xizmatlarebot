@@ -6,12 +6,16 @@ from typing import Any
 from aiogram.types import CallbackQuery, Message
 
 from services.ai_store import AIStore
+from services.group_command_mode import is_group_chat
 from services.token_pricing import (
     ServiceTariff,
+    premium_daily_tokens,
+    premium_upgrade_tokens,
     resolve_service_key,
     service_cost,
     service_tariff,
 )
+from ui.premium import upgrade_prompt_keyboard
 
 COMPLIMENTARY_SERVICE_KEYS = {
     "youtube_download_video",
@@ -77,7 +81,9 @@ def insufficient_balance_text(*, label: str, required: int, balance: int) -> str
         f"Xizmat: <b>{html.escape(label)}</b>\n"
         f"Kerak: <b>{int(required)}</b> token\n"
         f"Balans: <b>{int(balance)}</b> token\n\n"
-        "Balansni referral yoki Premium orqali oshiring."
+        "Premium bilan balansni tezroq oshiring:\n"
+        f"- faollashganda {premium_upgrade_tokens()} token\n"
+        f"- har 24 soatda {premium_daily_tokens()} token refill"
     )
 
 
@@ -104,19 +110,33 @@ async def ensure_balance(
         required=cost,
         balance=balance,
     )
+    private_upgrade_prompt = not is_group_chat(event)
+    target_reply_markup = (
+        upgrade_prompt_keyboard() if private_upgrade_prompt else reply_markup
+    )
     if isinstance(event, CallbackQuery):
-        await event.answer(f"{tariff.label}: {cost} token kerak", show_alert=True)
+        if private_upgrade_prompt:
+            await event.answer(
+                (
+                    "Token yetarli emas.\n"
+                    f"Premium bilan {premium_upgrade_tokens()} token va "
+                    f"har 24 soatda {premium_daily_tokens()} token oling."
+                ),
+                show_alert=True,
+            )
+        else:
+            await event.answer(f"{tariff.label}: {cost} token kerak", show_alert=True)
         if event.message is not None:
             await event.message.answer(
                 text,
                 parse_mode="HTML",
-                reply_markup=reply_markup,
+                reply_markup=target_reply_markup,
             )
     else:
         await event.answer(
             text,
             parse_mode="HTML",
-            reply_markup=reply_markup,
+            reply_markup=target_reply_markup,
         )
     return None
 

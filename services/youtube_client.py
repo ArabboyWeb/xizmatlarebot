@@ -18,6 +18,7 @@ try:
 except Exception:  # pragma: no cover
     yt_dlp = None
 
+from services.load_control import run_in_thread_with_limit
 from services.saver_client import (
     DownloadedFile,
     _safe_name,
@@ -308,7 +309,7 @@ async def search_youtube(query: str, limit: int = 6) -> dict[str, Any]:
             raise RuntimeError("YouTube qidiruv natijasi topilmadi.")
         return _normalize_entries(info, clean_query, max(1, min(limit, 8)))
 
-    return await asyncio.to_thread(run)
+    return await run_in_thread_with_limit("download", run)
 
 
 async def download_youtube(
@@ -337,7 +338,8 @@ async def download_youtube(
     limit = (
         max_bytes if isinstance(max_bytes, int) and max_bytes > 0 else saver_limit_bytes()
     )
-    return await asyncio.to_thread(
+    return await run_in_thread_with_limit(
+        "download",
         _download_youtube_sync,
         url,
         mode=safe_mode,

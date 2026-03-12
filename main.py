@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 from aiogram.types import CallbackQuery, Message
 from dotenv import load_dotenv
 
@@ -20,6 +20,7 @@ from handlers.currency import router as currency_router
 from handlers.fallback import router as fallback_router
 from handlers.jobs import router as jobs_router
 from handlers.pollinations import router as pollinations_router
+from handlers.premium import router as premium_router
 from handlers.saver import router as saver_router
 from handlers.shazam import router as shazam_router
 from handlers.tempmail import router as tempmail_router
@@ -311,6 +312,7 @@ def register_core_handlers(
             "/tinyurl - link qisqartirish\n"
             "/shazam - musiqa qidirish\n"
             "/convert - converter\n"
+            "/premium - premium sahifasi\n"
             "/help - yordam\n"
             "/limits - saqlash limitlari\n\n"
             "Bir command yuboring va keyingi xabarlar shu servisga tegishli bo'ladi."
@@ -432,7 +434,10 @@ async def main() -> None:
         env_username = _normalize_bot_username(os.getenv("BOT_USERNAME", ""))
         if resolved_username and resolved_username != env_username:
             os.environ["BOT_USERNAME"] = resolved_username
-    dispatcher = Dispatcher(storage=MemoryStorage())
+    dispatcher = Dispatcher(
+        storage=MemoryStorage(),
+        events_isolation=SimpleEventIsolation(),
+    )
     analytics_store = AnalyticsStore()
     ai_store = AIStore()
     try:
@@ -455,6 +460,7 @@ async def main() -> None:
     )
 
     dispatcher.include_router(admin_router)
+    dispatcher.include_router(premium_router)
     dispatcher.include_router(ai_chat_router)
     dispatcher.include_router(saver_router)
     dispatcher.include_router(weather_router)
