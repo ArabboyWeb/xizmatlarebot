@@ -21,22 +21,24 @@ from aiogram.utils.chat_action import ChatActionSender
 
 from handlers.admin import is_admin_user_id
 from services.ai_channel_logger import log_ai_exchange, remember_channel
-from services.ai_costs import estimate_grok_chat_cost_usd
+from services.ai_costs import estimate_model_chat_cost_usd
 from services.ai_gateway import (
     MODEL_ALIAS_AUTO,
     allowed_model_aliases_for_plan,
     effective_selected_plan,
     generate_ai_reply,
     model_label,
+    normalize_selected_model_alias,
     model_options_for_plan,
+    premium_model_credit_range,
     projected_ai_cost_usd,
+    projected_credits,
 )
 from services.ai_store import AIStore
 from services.group_command_mode import is_group_chat
 from services.token_pricing import (
     free_ai_chat_cooldown_seconds,
     free_ai_chat_limit_per_day,
-    premium_ai_chat_credit_cost,
 )
 from ui.premium import upgrade_prompt_keyboard
 
@@ -66,7 +68,38 @@ def _user_identity(message_or_callback: Message | CallbackQuery) -> tuple[int, s
 
 
 def _selected_model_label(user: dict[str, object]) -> str:
-    return model_label(str(user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO))
+    resolved = _resolved_selected_model_alias(user)
+    return model_label(resolved)
+
+
+def _resolved_selected_model_alias(user: dict[str, object]) -> str:
+    return normalize_selected_model_alias(
+        str(user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO),
+        effective_selected_plan(user),
+    )
+
+
+def _selected_model_credit_cost(user: dict[str, object]) -> int:
+    current_plan = str(user.get("current_plan", "free") or "free").strip().lower()
+    if current_plan != "premium":
+        return 0
+    return projected_credits(
+        user_text="",
+        current_plan=current_plan,
+        effective_plan=effective_selected_plan(user),
+        selected_model_alias=_resolved_selected_model_alias(user),
+    )
+
+
+def _premium_credit_hint(user: dict[str, object]) -> str:
+    selected_cost = _selected_model_credit_cost(user)
+    min_cost, max_cost = premium_model_credit_range()
+    if _resolved_selected_model_alias(user) == MODEL_ALIAS_AUTO and min_cost != max_cost:
+        return (
+            f"Narx: <b>{selected_cost}</b> kredit / chat\n"
+            f"Premium modellar: <b>{min_cost}-{max_cost}</b> kredit"
+        )
+    return f"Narx: <b>{selected_cost}</b> kredit / chat"
 
 
 def _friendly_ai_error(error: Exception) -> str:
@@ -141,7 +174,7 @@ def ai_reply_keyboard() -> InlineKeyboardMarkup:
 
 def _model_menu_keyboard(user: dict[str, object]) -> InlineKeyboardMarkup:
     target_plan = effective_selected_plan(user)
-    selected_model = str(user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO).strip().lower()
+    selected_model = _resolved_selected_model_alias(user)
     rows: list[list[InlineKeyboardButton]] = []
     options = model_options_for_plan(target_plan)
     for index in range(0, len(options), 2):
@@ -182,7 +215,7 @@ def _dashboard_text(user: dict[str, object]) -> str:
         "Savol yuboring. Bot kerak bo'lsa modelni o'zi tanlaydi.",
     ]
     if current_plan == "premium":
-        rows.insert(4, f"Narx: <b>{premium_ai_chat_credit_cost()}</b> kredit / chat")
+        rows.insert(4, _premium_credit_hint(user))
     return "\n".join(rows)
 
 
@@ -194,11 +227,14 @@ def _legacy_plans_text() -> str:
 
 
 def _model_menu_text(user: dict[str, object]) -> str:
-    return (
+    text = (
         "<b>Model tanlash</b>\n\n"
         f"Tanlangan model: <b>{html.escape(_selected_model_label(user))}</b>\n\n"
         "Auto rejim botga modelni ozi tanlash imkonini beradi."
     )
+    if str(user.get("current_plan", "free") or "free").strip().lower() == "premium":
+        text += "\nPremium modellar yuqoridan pastga nisbatan kuchliroq tartibda joylangan."
+    return text
 
 
 def _trim_ai_text(text: str, *, limit: int) -> str:
@@ -444,15 +480,14 @@ async def ai_diag_command(
         username=username,
         full_name=full_name,
     )
+    selected_model_alias = _resolved_selected_model_alias(user)
     try:
         decision, result = await generate_ai_reply(
             user_text="Salom",
             history=[],
             current_plan=str(user.get("current_plan", "free") or "free"),
             effective_plan=effective_selected_plan(user),
-            selected_model_alias=str(
-                user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO
-            ),
+            selected_model_alias=selected_model_alias,
         )
         await message.answer(
             (
@@ -527,14 +562,20 @@ async def ai_prompt_handler(
         full_name=full_name,
     )
     effective_plan = effective_selected_plan(user)
-    selected_model_alias = str(user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO)
+    selected_model_alias = _resolved_selected_model_alias(user)
     history = await ai_store.get_conversation(user_id=user_id)
+    credit_cost = projected_credits(
+        user_text=text,
+        current_plan=str(user.get("current_plan", "free") or "free"),
+        effective_plan=effective_plan,
+        selected_model_alias=selected_model_alias,
+    )
     authorization = await ai_store.authorize_ai_service(
         user_id=user_id,
         username=username,
         full_name=full_name,
         service_key="ai_chat",
-        credit_cost=premium_ai_chat_credit_cost(),
+        credit_cost=credit_cost,
         estimated_ai_cost_usd=projected_ai_cost_usd(
             user_text=text,
             history=history,
@@ -572,10 +613,11 @@ async def ai_prompt_handler(
             )
             return
         if reason == "insufficient_credits":
+            required_credits = int(authorization.get("required", credit_cost) or credit_cost)
             await message.answer(
                 (
                     "<b>Kredit yetarli emas</b>\n"
-                    f"AI chat uchun <b>{premium_ai_chat_credit_cost()}</b> kredit kerak.\n"
+                    f"AI chat uchun <b>{required_credits}</b> kredit kerak.\n"
                     f"Balans: <b>{int(user.get('credit_balance', user.get('token_balance', 0)) or 0)}</b> kredit"
                 ),
                 parse_mode="HTML",
@@ -643,7 +685,11 @@ async def ai_prompt_handler(
                 selected_model_alias=selected_model_alias,
                 on_text=on_stream_text,
             )
-        credits_used = premium_ai_chat_credit_cost() if effective_plan == "premium" else 0
+        credits_used = (
+            int(authorization.get("credit_cost", 0) or 0)
+            if effective_plan == "premium"
+            else 0
+        )
         updated_user = await ai_store.finalize_ai_service(
             user_id=user_id,
             username=username,
@@ -653,7 +699,8 @@ async def ai_prompt_handler(
             hold_id=hold_id,
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
-            actual_ai_cost_usd=estimate_grok_chat_cost_usd(
+            actual_ai_cost_usd=estimate_model_chat_cost_usd(
+                model_alias=decision.model_alias,
                 prompt_tokens=result.prompt_tokens,
                 completion_tokens=result.completion_tokens,
             ),

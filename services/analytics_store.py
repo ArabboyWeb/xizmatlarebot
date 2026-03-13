@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message
+from services.storage_config import resolve_database_url
 
 try:
     import asyncpg
@@ -47,11 +48,7 @@ class AnalyticsStore:
         database_url: str | None = None,
     ) -> None:
         self.path = path or DEFAULT_ANALYTICS_PATH
-        self.database_url = (
-            database_url
-            or os.getenv("DATABASE_URL", "").strip()
-            or os.getenv("NEON_DATABASE_URL", "").strip()
-        )
+        self.database_url = resolve_database_url(database_url)
         self._lock = asyncio.Lock()
         self._loaded = False
         self._data: dict[str, Any] = {}

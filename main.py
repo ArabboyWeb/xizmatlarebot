@@ -32,6 +32,10 @@ from handlers.youtube_search import router as youtube_search_router
 from services.ai_store import AIContextMiddleware, AIStore
 from services.analytics_store import AnalyticsMiddleware, AnalyticsStore
 from services.group_command_mode import command_menu_text, install_group_command_mode, is_group_chat
+from services.storage_config import (
+    resolve_database_url,
+    should_require_persistent_database,
+)
 from services.token_pricing import (
     free_reset_hours,
     free_reset_tokens,
@@ -406,10 +410,13 @@ async def main() -> None:
     )
     main_logger = logging.getLogger("Main")
 
-    database_url = os.getenv("DATABASE_URL", "").strip() or os.getenv(
-        "NEON_DATABASE_URL", ""
-    ).strip()
+    database_url = resolve_database_url()
     if not database_url:
+        if should_require_persistent_database():
+            main_logger.error(
+                "Persistent database topilmadi. Hosted deploy local JSON fallback bilan ishga tushirilmaydi. DATABASE_URL yoki Postgres envlarini sozlang."
+            )
+            return
         main_logger.warning(
             "DATABASE_URL yo'q. Bot local JSON storage bilan ishlaydi va redeploydan keyin data saqlanmaydi."
         )
@@ -458,8 +465,8 @@ async def main() -> None:
         storage=MemoryStorage(),
         events_isolation=SimpleEventIsolation(),
     )
-    analytics_store = AnalyticsStore()
-    ai_store = AIStore()
+    analytics_store = AnalyticsStore(database_url=database_url)
+    ai_store = AIStore(database_url=database_url)
     try:
         await analytics_store.startup()
         await ai_store.startup()

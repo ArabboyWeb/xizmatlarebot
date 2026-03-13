@@ -10,9 +10,9 @@ from typing import Any
 
 import aiohttp
 
-from services.ai_costs import estimate_grok_chat_cost_usd
+from services.ai_costs import estimate_model_chat_cost_usd
 from services.load_control import run_with_limit
-from services.token_pricing import ai_min_cost
+from services.token_pricing import ai_min_cost, premium_ai_chat_credit_cost
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -58,9 +58,28 @@ class AIResult:
     latency_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class AIModelSpec:
+    provider: str
+    model: str
+    credit_cost: int
+    label: str
+    max_output_tokens: int
+
+
 def _env(name: str, default: str = "") -> str:
     value = os.getenv(name, "").strip()
     return value or default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = _env(name, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def _openrouter_headers() -> dict[str, str]:
@@ -92,15 +111,46 @@ def _free_complex_model() -> str:
 
 
 def _premium_chat_model() -> str:
-    return _env("AI_PREMIUM_CHAT_MODEL", _env("AI_PREMIUM_MODEL_COMPLEX", "x-ai/grok-4.1-fast"))
+    return _env(
+        "AI_PREMIUM_CHAT_MODEL",
+        _env("AI_PREMIUM_MODEL_COMPLEX", "x-ai/grok-4.1-fast"),
+    )
+
+
+def _premium_hunter_model() -> str:
+    return _env("AI_PREMIUM_MODEL_HUNTER", "openrouter/hunter-alpha")
+
+
+def _premium_deepseek_model() -> str:
+    return _env("AI_PREMIUM_MODEL_DEEPSEEK", "deepseek/deepseek-v3.2")
+
+
+def _premium_step_model() -> str:
+    return _env("AI_PREMIUM_MODEL_STEP", "stepfun/step-3.5-flash:free")
+
+
+def _premium_qwen_model() -> str:
+    return _env("AI_PREMIUM_MODEL_QWEN", _free_complex_model())
+
+
+def _premium_glm_model() -> str:
+    return _env("AI_PREMIUM_MODEL_GLM", _free_simple_model())
 
 
 def _free_max_output_tokens() -> int:
-    return max(256, int(_env("AI_FREE_MAX_OUTPUT_TOKENS", "700")))
+    return max(256, _env_int("AI_FREE_MAX_OUTPUT_TOKENS", 700))
 
 
 def _premium_max_output_tokens() -> int:
-    return max(256, int(_env("AI_PREMIUM_MAX_OUTPUT_TOKENS", "900")))
+    return max(256, _env_int("AI_PREMIUM_MAX_OUTPUT_TOKENS", 800))
+
+
+def _premium_model_credit_cost(name: str, default: int) -> int:
+    return max(1, _env_int(name, default))
+
+
+def _premium_model_max_output_tokens(name: str, default: int) -> int:
+    return max(256, _env_int(name, default))
 
 
 def plan_level(plan: str) -> int:
@@ -128,16 +178,100 @@ def effective_selected_plan(user: dict[str, Any]) -> str:
     return current_plan if selected_plan == MODEL_ALIAS_AUTO else selected_plan
 
 
-def _manual_model_specs() -> dict[str, tuple[str, str, int, str, int]]:
+LEGACY_MODEL_ALIASES = {
+    "grok_46": "premium_grok_fast",
+    "premium_grok_46": "premium_grok_fast",
+    "free_qwen": "premium_qwen",
+}
+
+
+def _manual_model_specs() -> dict[str, AIModelSpec]:
+    premium_default_cost = premium_ai_chat_credit_cost()
     return {
-        "free_glm": ("openrouter", _free_simple_model(), 1, "GLM-4.5 Air Free", _free_max_output_tokens()),
-        "free_qwen": ("openrouter", _free_complex_model(), 1, "Qwen 3 VL Thinking", _free_max_output_tokens()),
-        "premium_grok_fast": (
-            "openrouter",
-            _premium_chat_model(),
-            1,
-            "Grok 4.1 Fast",
-            _premium_max_output_tokens(),
+        "free_glm": AIModelSpec(
+            provider="openrouter",
+            model=_free_simple_model(),
+            credit_cost=0,
+            label="GLM 4.5 Air",
+            max_output_tokens=_free_max_output_tokens(),
+        ),
+        "premium_grok_fast": AIModelSpec(
+            provider="openrouter",
+            model=_premium_chat_model(),
+            credit_cost=_premium_model_credit_cost(
+                "AI_PREMIUM_CHAT_CREDITS_GROK",
+                premium_default_cost,
+            ),
+            label="Grok 4.6",
+            max_output_tokens=_premium_model_max_output_tokens(
+                "AI_PREMIUM_MAX_OUTPUT_TOKENS_GROK",
+                _premium_max_output_tokens(),
+            ),
+        ),
+        "premium_hunter_alpha": AIModelSpec(
+            provider="openrouter",
+            model=_premium_hunter_model(),
+            credit_cost=_premium_model_credit_cost(
+                "AI_PREMIUM_CHAT_CREDITS_HUNTER",
+                premium_default_cost,
+            ),
+            label="Hunter Alpha",
+            max_output_tokens=_premium_model_max_output_tokens(
+                "AI_PREMIUM_MAX_OUTPUT_TOKENS_HUNTER",
+                _premium_max_output_tokens(),
+            ),
+        ),
+        "premium_deepseek_v32": AIModelSpec(
+            provider="openrouter",
+            model=_premium_deepseek_model(),
+            credit_cost=_premium_model_credit_cost(
+                "AI_PREMIUM_CHAT_CREDITS_DEEPSEEK",
+                premium_default_cost,
+            ),
+            label="DeepSeek V3.2",
+            max_output_tokens=_premium_model_max_output_tokens(
+                "AI_PREMIUM_MAX_OUTPUT_TOKENS_DEEPSEEK",
+                _premium_max_output_tokens(),
+            ),
+        ),
+        "premium_qwen": AIModelSpec(
+            provider="openrouter",
+            model=_premium_qwen_model(),
+            credit_cost=_premium_model_credit_cost(
+                "AI_PREMIUM_CHAT_CREDITS_QWEN",
+                premium_default_cost,
+            ),
+            label="Qwen 3 Thinking",
+            max_output_tokens=_premium_model_max_output_tokens(
+                "AI_PREMIUM_MAX_OUTPUT_TOKENS_QWEN",
+                max(256, _premium_max_output_tokens() - 100),
+            ),
+        ),
+        "premium_step_35_flash": AIModelSpec(
+            provider="openrouter",
+            model=_premium_step_model(),
+            credit_cost=_premium_model_credit_cost(
+                "AI_PREMIUM_CHAT_CREDITS_STEP",
+                premium_default_cost,
+            ),
+            label="Step 3.5 Flash",
+            max_output_tokens=_premium_model_max_output_tokens(
+                "AI_PREMIUM_MAX_OUTPUT_TOKENS_STEP",
+                max(256, _premium_max_output_tokens() - 50),
+            ),
+        ),
+        "premium_glm": AIModelSpec(
+            provider="openrouter",
+            model=_premium_glm_model(),
+            credit_cost=_premium_model_credit_cost(
+                "AI_PREMIUM_CHAT_CREDITS_GLM",
+                premium_default_cost,
+            ),
+            label="GLM 4.5 Air",
+            max_output_tokens=_premium_model_max_output_tokens(
+                "AI_PREMIUM_MAX_OUTPUT_TOKENS_GLM",
+                max(256, _premium_max_output_tokens() - 50),
+            ),
         ),
     }
 
@@ -145,15 +279,57 @@ def _manual_model_specs() -> dict[str, tuple[str, str, int, str, int]]:
 def allowed_model_aliases_for_plan(plan: str) -> list[str]:
     normalized = (plan or "free").strip().lower()
     if normalized == "premium":
-        return ["premium_grok_fast"]
-    return ["free_glm", "free_qwen"]
+        return [
+            "premium_grok_fast",
+            "premium_hunter_alpha",
+            "premium_deepseek_v32",
+            "premium_qwen",
+            "premium_step_35_flash",
+            "premium_glm",
+        ]
+    return ["free_glm"]
+
+
+def normalize_selected_model_alias(selected_model_alias: str, effective_plan: str) -> str:
+    normalized_alias = str(selected_model_alias or MODEL_ALIAS_AUTO).strip().lower()
+    normalized_alias = LEGACY_MODEL_ALIASES.get(normalized_alias, normalized_alias)
+    if normalized_alias == "free_glm" and (effective_plan or "").strip().lower() == "premium":
+        normalized_alias = "premium_glm"
+    if normalized_alias == MODEL_ALIAS_AUTO:
+        return MODEL_ALIAS_AUTO
+    if normalized_alias not in _manual_model_specs():
+        return MODEL_ALIAS_AUTO
+    if normalized_alias not in allowed_model_aliases_for_plan(effective_plan):
+        return MODEL_ALIAS_AUTO
+    return normalized_alias
+
+
+def model_credit_cost(alias: str, *, plan: str) -> int:
+    normalized_plan = (plan or "free").strip().lower()
+    normalized_alias = normalize_selected_model_alias(alias, normalized_plan)
+    if normalized_plan != "premium" or normalized_alias == MODEL_ALIAS_AUTO:
+        return 0
+    spec = _manual_model_specs().get(normalized_alias)
+    return max(0, int(spec.credit_cost if spec is not None else premium_ai_chat_credit_cost()))
+
+
+def premium_model_credit_range() -> tuple[int, int]:
+    costs = [model_credit_cost(alias, plan="premium") for alias in allowed_model_aliases_for_plan("premium")]
+    if not costs:
+        base = premium_ai_chat_credit_cost()
+        return base, base
+    return min(costs), max(costs)
 
 
 def model_options_for_plan(plan: str) -> list[tuple[str, str]]:
     specs = _manual_model_specs()
     options = [(MODEL_ALIAS_AUTO, "Auto")]
     for alias in allowed_model_aliases_for_plan(plan):
-        options.append((alias, specs[alias][3]))
+        spec = specs[alias]
+        if (plan or "free").strip().lower() == "premium":
+            options.append((alias, f"{spec.label} • {spec.credit_cost} kr"))
+        else:
+            options.append((alias, spec.label))
     return options
 
 
@@ -161,24 +337,24 @@ def model_label(alias: str) -> str:
     normalized = (alias or MODEL_ALIAS_AUTO).strip().lower()
     if normalized == MODEL_ALIAS_AUTO:
         return "Auto"
-    return _manual_model_specs().get(normalized, ("", "", 0, normalized))[3]
+    normalized = LEGACY_MODEL_ALIASES.get(normalized, normalized)
+    spec = _manual_model_specs().get(normalized)
+    return spec.label if spec is not None else normalized
 
 
 def _manual_route_decision(selected_model_alias: str, effective_plan: str) -> AIRouteDecision | None:
-    normalized_alias = (selected_model_alias or MODEL_ALIAS_AUTO).strip().lower()
+    normalized_alias = normalize_selected_model_alias(selected_model_alias, effective_plan)
     if normalized_alias == MODEL_ALIAS_AUTO:
         return None
-    if normalized_alias not in allowed_model_aliases_for_plan(effective_plan):
-        return None
-    provider, model, credit_multiplier, _, max_output_tokens = _manual_model_specs()[normalized_alias]
+    spec = _manual_model_specs()[normalized_alias]
     return AIRouteDecision(
-        provider=provider,
-        model=model,
+        provider=spec.provider,
+        model=spec.model,
         route=f"manual_{effective_plan}",
-        credit_multiplier=credit_multiplier,
+        credit_multiplier=spec.credit_cost,
         effective_plan=effective_plan,
         model_alias=normalized_alias,
-        max_output_tokens=max_output_tokens,
+        max_output_tokens=spec.max_output_tokens,
     )
 
 
@@ -332,40 +508,38 @@ def select_route(
 
     complexity = _complexity(user_text)
     if effective_plan == "free":
-        model = _free_simple_model()
-        model_alias = "free_glm"
-        if complexity in {"standard", "complex"}:
-            model = _free_complex_model()
-            model_alias = "free_qwen"
+        spec = _manual_model_specs()["free_glm"]
         return AIRouteDecision(
-            provider="openrouter",
-            model=model,
+            provider=spec.provider,
+            model=spec.model,
             route=f"free_{complexity}",
-            credit_multiplier=1,
+            credit_multiplier=0,
             effective_plan="free",
-            model_alias=model_alias,
-            max_output_tokens=_free_max_output_tokens(),
+            model_alias="free_glm",
+            max_output_tokens=spec.max_output_tokens,
         )
 
     if effective_plan == "premium":
+        spec = _manual_model_specs()["premium_grok_fast"]
         return AIRouteDecision(
-            provider="openrouter",
-            model=_premium_chat_model(),
+            provider=spec.provider,
+            model=spec.model,
             route=f"premium_{complexity}",
-            credit_multiplier=1,
+            credit_multiplier=spec.credit_cost,
             effective_plan="premium",
             model_alias="premium_grok_fast",
-            max_output_tokens=_premium_max_output_tokens(),
+            max_output_tokens=spec.max_output_tokens,
         )
 
+    spec = _manual_model_specs()["premium_grok_fast"]
     return AIRouteDecision(
-        provider="openrouter",
-        model=_premium_chat_model(),
+        provider=spec.provider,
+        model=spec.model,
         route="premium_complex",
-        credit_multiplier=1,
+        credit_multiplier=spec.credit_cost,
         effective_plan="premium",
         model_alias="premium_grok_fast",
-        max_output_tokens=_premium_max_output_tokens(),
+        max_output_tokens=spec.max_output_tokens,
     )
 
 
@@ -378,7 +552,7 @@ def estimate_credits(
     if decision.effective_plan == "free":
         return 0
     _ = (prompt_tokens, completion_tokens)
-    return ai_min_cost(decision.effective_plan)
+    return max(ai_min_cost(decision.effective_plan), int(decision.credit_multiplier))
 
 
 def projected_credits(
@@ -396,7 +570,7 @@ def projected_credits(
     )
     if decision.effective_plan == "free":
         return 0
-    return ai_min_cost(decision.effective_plan)
+    return max(ai_min_cost(decision.effective_plan), int(decision.credit_multiplier))
 
 
 def projected_ai_cost_usd(
@@ -417,7 +591,8 @@ def projected_ai_cost_usd(
         return 0.0
     messages = build_messages(history, user_text)
     prompt_tokens = _approx_token_count(_conversation_text(messages))
-    return estimate_grok_chat_cost_usd(
+    return estimate_model_chat_cost_usd(
+        model_alias=decision.model_alias,
         prompt_tokens=prompt_tokens,
         completion_tokens=decision.max_output_tokens,
     )

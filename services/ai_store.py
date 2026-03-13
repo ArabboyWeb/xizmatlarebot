@@ -14,6 +14,7 @@ from aiogram import BaseMiddleware
 
 from services.ai_costs import premium_safe_ai_budget_usd
 from services.ai_gateway import MODEL_ALIAS_AUTO, clamp_selected_plan, effective_selected_plan
+from services.storage_config import resolve_database_url
 from services.token_pricing import (
     free_ai_chat_cooldown_seconds,
     free_ai_chat_limit_per_day,
@@ -160,11 +161,7 @@ class AIStore:
         database_url: str | None = None,
     ) -> None:
         self.path = path or DEFAULT_AI_DATA_PATH
-        self.database_url = (
-            database_url
-            or os.getenv("DATABASE_URL", "").strip()
-            or os.getenv("NEON_DATABASE_URL", "").strip()
-        )
+        self.database_url = resolve_database_url(database_url)
         self._lock = asyncio.Lock()
         self._loaded = False
         self._data: dict[str, Any] = {}

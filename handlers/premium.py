@@ -11,11 +11,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from handlers.admin import admin_ids, is_admin_user_id
+from services.ai_gateway import premium_model_credit_range
 from services.ai_costs import premium_financial_snapshot
 from services.ai_store import AIStore
 from services.group_command_mode import is_group_chat
 from services.token_pricing import (
-    premium_ai_chat_credit_cost,
     premium_ai_image_credit_cost,
     premium_ai_search_credit_cost,
     premium_card_number,
@@ -58,6 +58,12 @@ def _premium_page_text(
     credit_balance = int(user.get("credit_balance", user.get("token_balance", 0)) or 0)
     refill_label = str(user.get("next_credit_reset_at", user.get("reset_date", "")) or "").replace("T", " ")[:16]
     financials = premium_financial_snapshot()
+    min_chat_cost, max_chat_cost = premium_model_credit_range()
+    chat_price_text = (
+        f"{min_chat_cost}-{max_chat_cost} kredit / xabar"
+        if min_chat_cost != max_chat_cost
+        else f"{min_chat_cost} kredit / xabar"
+    )
     rows = [
         "<b>Premium</b>",
         "",
@@ -65,7 +71,7 @@ def _premium_page_text(
         f"Karta: <code>{premium_card_number()}</code>",
         "",
         f"Har billing siklida: <b>{premium_monthly_credits()}</b> kredit",
-        f"AI Chat: <b>{premium_ai_chat_credit_cost()}</b> kredit / xabar",
+        f"AI Chat: <b>{chat_price_text}</b>",
         f"AI Rasm: <b>{premium_ai_image_credit_cost()}</b> kredit / rasm",
         f"AI Web Search: <b>{premium_ai_search_credit_cost()}</b> kredit / so'rov",
         f"AI byudjet cap: <b>~${financials['premium_safe_ai_budget_usd']}</b> / oy",
