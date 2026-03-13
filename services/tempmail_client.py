@@ -6,6 +6,8 @@ from typing import Any
 
 import aiohttp
 
+from services.load_control import run_with_limit
+
 DEFAULT_API_BASE = "https://www.1secmail.com/api/v1/"
 MAILTM_API_BASE = "https://api.mail.tm"
 HTTP_TIMEOUT_SECONDS = 18
@@ -70,22 +72,24 @@ def split_mailbox(email: str) -> tuple[str, str]:
 async def _request_json(
     action: str, params: dict[str, str | int], api_base: str | None = None
 ) -> Any:
-    base = _normalize_base(api_base)
-    query: dict[str, str | int] = {"action": action}
-    query.update(params)
+    async def _run() -> Any:
+        base = _normalize_base(api_base)
+        query: dict[str, str | int] = {"action": action}
+        query.update(params)
 
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
-    async with aiohttp.ClientSession(timeout=timeout, headers=_headers()) as session:
-        async with session.get(base, params=query) as response:
-            if response.status >= 500:
-                raise RuntimeError("1secmail xizmati vaqtincha ishlamayapti.")
-            if response.status >= 400:
-                body = (await response.text())[:160].strip()
-                raise RuntimeError(
-                    f"1secmail xatosi: HTTP {response.status}. {body or 'No body'}"
-                )
-            payload = await response.json(content_type=None)
-    return payload
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(timeout=timeout, headers=_headers()) as session:
+            async with session.get(base, params=query) as response:
+                if response.status >= 500:
+                    raise RuntimeError("1secmail xizmati vaqtincha ishlamayapti.")
+                if response.status >= 400:
+                    body = (await response.text())[:160].strip()
+                    raise RuntimeError(
+                        f"1secmail xatosi: HTTP {response.status}. {body or 'No body'}"
+                    )
+                return await response.json(content_type=None)
+
+    return await run_with_limit("api", _run)
 
 
 async def _mailtm_request_json(
@@ -96,33 +100,36 @@ async def _mailtm_request_json(
     params: dict[str, str | int] | None = None,
     json_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    base = os.getenv("MAILTM_API_BASE", MAILTM_API_BASE).strip() or MAILTM_API_BASE
-    base = base.rstrip("/")
-    url = f"{base}{path}"
-    headers = _headers()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    async def _run() -> dict[str, Any]:
+        base = os.getenv("MAILTM_API_BASE", MAILTM_API_BASE).strip() or MAILTM_API_BASE
+        base = base.rstrip("/")
+        url = f"{base}{path}"
+        headers = _headers()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.request(
-            method,
-            url,
-            params=params,
-            json=json_data,
-        ) as response:
-            body = await response.json(content_type=None)
-            if response.status >= 400:
-                message = ""
-                if isinstance(body, dict):
-                    message = str(body.get("detail", "")).strip()
-                raise RuntimeError(
-                    f"mail.tm xatosi: HTTP {response.status}. {message or 'Request failed'}"
-                )
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.request(
+                method,
+                url,
+                params=params,
+                json=json_data,
+            ) as response:
+                body = await response.json(content_type=None)
+                if response.status >= 400:
+                    message = ""
+                    if isinstance(body, dict):
+                        message = str(body.get("detail", "")).strip()
+                    raise RuntimeError(
+                        f"mail.tm xatosi: HTTP {response.status}. {message or 'Request failed'}"
+                    )
 
-    if not isinstance(body, dict):
-        raise RuntimeError("mail.tm noto'g'ri javob qaytardi.")
-    return body
+        if not isinstance(body, dict):
+            raise RuntimeError("mail.tm noto'g'ri javob qaytardi.")
+        return body
+
+    return await run_with_limit("api", _run)
 
 
 async def _mailtm_create_account() -> MailTmAccount:

@@ -3,6 +3,8 @@ from typing import Any
 
 import aiohttp
 
+from services.load_control import run_with_limit
+
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 OPEN_METEO_REVERSE_URL = "https://geocoding-api.open-meteo.com/v1/reverse"
@@ -66,19 +68,22 @@ def _weather_description(code: Any) -> str:
 async def _request_json(
     url: str, params: dict[str, str | float | int]
 ) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, params=params) as response:
-            if response.status >= 500:
-                raise RuntimeError(
-                    "Servis vaqtincha ishlamayapti, keyinroq urinib ko'ring."
-                )
-            response.raise_for_status()
-            payload = await response.json()
+    async def _run() -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, params=params) as response:
+                if response.status >= 500:
+                    raise RuntimeError(
+                        "Servis vaqtincha ishlamayapti, keyinroq urinib ko'ring."
+                    )
+                response.raise_for_status()
+                payload = await response.json()
 
-    if not isinstance(payload, dict):
-        raise RuntimeError("API noto'g'ri javob qaytardi.")
-    return payload
+        if not isinstance(payload, dict):
+            raise RuntimeError("API noto'g'ri javob qaytardi.")
+        return payload
+
+    return await run_with_limit("api", _run)
 
 
 async def resolve_city(city: str) -> dict[str, Any]:

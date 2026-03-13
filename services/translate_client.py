@@ -7,6 +7,8 @@ from urllib.parse import quote_plus
 
 import aiohttp
 
+from services.load_control import run_with_limit
+
 LIBRETRANSLATE_TIMEOUT_SECONDS = 20
 DEFAULT_LIBRETRANSLATE_ENDPOINT = "https://translate.argosopentech.com/translate"
 MYMEMORY_ENDPOINT = "https://api.mymemory.translated.net/get"
@@ -212,30 +214,46 @@ def _clean_text(text: str) -> str:
 async def translate_text(
     text: str, source: str, target: str, engine: str = "auto"
 ) -> TranslationResult:
-    clean_text = _clean_text(text)
-    normalized_source = _validate_language(source, allow_auto=True)
-    normalized_target = _validate_language(target, allow_auto=False)
-    normalized_engine = (engine or "auto").strip().lower()
-    if normalized_engine in {"libre", "libretranslate"}:
-        normalized_engine = "libretranslate"
-    if normalized_engine not in {"auto", "google", "libretranslate"}:
-        raise ValueError("Tarjima engine noto'g'ri berildi.")
+    async def _run() -> TranslationResult:
+        clean_text = _clean_text(text)
+        normalized_source = _validate_language(source, allow_auto=True)
+        normalized_target = _validate_language(target, allow_auto=False)
+        normalized_engine = (engine or "auto").strip().lower()
+        if normalized_engine in {"libre", "libretranslate"}:
+            normalized_engine = "libretranslate"
+        if normalized_engine not in {"auto", "google", "libretranslate"}:
+            raise ValueError("Tarjima engine noto'g'ri berildi.")
 
-    libre_endpoint = (
-        os.getenv("LIBRETRANSLATE_ENDPOINT", "").strip()
-        or DEFAULT_LIBRETRANSLATE_ENDPOINT
-    )
-    libre_api_key = os.getenv("LIBRETRANSLATE_API_KEY", "").strip()
-
-    if normalized_engine == "google":
-        return await asyncio.to_thread(
-            _translate_google_sync,
-            clean_text,
-            normalized_source,
-            normalized_target,
+        libre_endpoint = (
+            os.getenv("LIBRETRANSLATE_ENDPOINT", "").strip()
+            or DEFAULT_LIBRETRANSLATE_ENDPOINT
         )
+        libre_api_key = os.getenv("LIBRETRANSLATE_API_KEY", "").strip()
 
-    if normalized_engine == "libretranslate":
+        if normalized_engine == "google":
+            return await asyncio.to_thread(
+                _translate_google_sync,
+                clean_text,
+                normalized_source,
+                normalized_target,
+            )
+
+        if normalized_engine == "libretranslate":
+            try:
+                return await _translate_libre(
+                    clean_text,
+                    normalized_source,
+                    normalized_target,
+                    libre_endpoint,
+                    libre_api_key,
+                )
+            except Exception:
+                return await _translate_mymemory(
+                    clean_text,
+                    normalized_source,
+                    normalized_target,
+                )
+
         try:
             return await _translate_libre(
                 clean_text,
@@ -244,41 +262,28 @@ async def translate_text(
                 libre_endpoint,
                 libre_api_key,
             )
-        except Exception:
-            return await _translate_mymemory(
-                clean_text,
-                normalized_source,
-                normalized_target,
-            )
+        except Exception:  # noqa: BLE001
+            try:
+                return await _translate_mymemory(
+                    clean_text,
+                    normalized_source,
+                    normalized_target,
+                )
+            except Exception:
+                pass
 
-    try:
-        return await _translate_libre(
-            clean_text,
-            normalized_source,
-            normalized_target,
-            libre_endpoint,
-            libre_api_key,
-        )
-    except Exception:  # noqa: BLE001
         try:
-            return await _translate_mymemory(
+            return await asyncio.to_thread(
+                _translate_google_sync,
                 clean_text,
                 normalized_source,
                 normalized_target,
             )
         except Exception:
-            pass
+            return await _translate_mymemory(
+                clean_text,
+                normalized_source,
+                normalized_target,
+            )
 
-    try:
-        return await asyncio.to_thread(
-            _translate_google_sync,
-            clean_text,
-            normalized_source,
-            normalized_target,
-        )
-    except Exception:
-        return await _translate_mymemory(
-            clean_text,
-            normalized_source,
-            normalized_target,
-        )
+    return await run_with_limit("api", _run)

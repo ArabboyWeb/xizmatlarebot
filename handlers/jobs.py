@@ -16,6 +16,7 @@ from aiogram.utils.chat_action import ChatActionSender
 
 from services.ai_store import AIStore
 from services.jsearch_client import search_jobs
+from services.request_feedback import clear_wait_message, send_wait_message
 from services.token_billing import ensure_balance
 
 router = Router(name="jobs")
@@ -143,17 +144,23 @@ async def jobs_query_handler(
     if charge is None:
         return
     _user, cost, user_id, username, full_name = charge
+    progress_message = await send_wait_message(
+        message,
+        text="<b>Iltimos kuting...</b>\nIsh qidiruvi bajarilmoqda.",
+    )
 
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             data = await search_jobs(query)
     except Exception as error:  # noqa: BLE001
+        await clear_wait_message(progress_message)
         await message.answer(
             f"<b>JSearch xatosi</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
             reply_markup=jobs_prompt_keyboard(),
         )
         return
+    await clear_wait_message(progress_message)
 
     await state.set_state(JobsState.waiting_query)
     await message.answer(

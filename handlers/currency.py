@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from aiogram.utils.chat_action import ChatActionSender
 
 from services.ai_store import AIStore
+from services.request_feedback import clear_wait_message, edit_wait_message, send_wait_message
 from services.token_billing import ensure_balance
 from services.currency_client import build_currency_text, fetch_currency_rates
 
@@ -109,6 +110,10 @@ async def currency_command_handler(message: Message, ai_store: AIStore) -> None:
     if charge is None:
         return
     _user, cost, user_id, username, full_name = charge
+    progress_message = await send_wait_message(
+        message,
+        text="<b>Iltimos kuting...</b>\nValyuta kurslari olinmoqda.",
+    )
 
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
@@ -129,9 +134,14 @@ async def currency_command_handler(message: Message, ai_store: AIStore) -> None:
             full_name=full_name,
             amount=cost,
         )
-
-    await message.answer(
-        text,
-        parse_mode="HTML",
+    if not await edit_wait_message(
+        progress_message,
+        text=text,
         reply_markup=currency_keyboard(),
-    )
+    ):
+        await clear_wait_message(progress_message)
+        await message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=currency_keyboard(),
+        )

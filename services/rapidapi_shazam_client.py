@@ -2,6 +2,7 @@ from typing import Any
 
 import aiohttp
 
+from services.load_control import run_with_limit
 from services.rapidapi_client import HTTP_TIMEOUT_SECONDS, rapidapi_get
 
 SHAZAM_HOST = "shazam.p.rapidapi.com"
@@ -90,20 +91,23 @@ def _fallback_hints(tracks: list[dict[str, str]]) -> list[str]:
 
 
 async def _deezer_search(term: str) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "User-Agent": "Mozilla/5.0 (XizmatlarBot/1.0)",
-    }
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(DEEZER_SEARCH_URL, params={"q": term}) as response:
-            payload = await response.json(content_type=None)
-            if response.status >= 400:
-                raise RuntimeError(f"Deezer fallback xatosi: HTTP {response.status}")
+    async def _run() -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": "Mozilla/5.0 (XizmatlarBot/1.0)",
+        }
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(DEEZER_SEARCH_URL, params={"q": term}) as response:
+                payload = await response.json(content_type=None)
+                if response.status >= 400:
+                    raise RuntimeError(f"Deezer fallback xatosi: HTTP {response.status}")
 
-    if not isinstance(payload, dict):
-        raise RuntimeError("Deezer fallback noto'g'ri formatda javob qaytardi.")
-    return payload
+        if not isinstance(payload, dict):
+            raise RuntimeError("Deezer fallback noto'g'ri formatda javob qaytardi.")
+        return payload
+
+    return await run_with_limit("api", _run)
 
 
 async def shazam_autocomplete(term: str, locale: str = "en-US") -> dict[str, Any]:

@@ -15,6 +15,7 @@ from aiogram.types import (
 from aiogram.utils.chat_action import ChatActionSender
 
 from services.ai_store import AIStore
+from services.request_feedback import clear_wait_message, send_wait_message
 from services.token_billing import ensure_balance
 from services.rapidapi_translate_client import language_name, translate_text
 
@@ -209,16 +210,22 @@ async def translate_text_handler(
     if charge is None:
         return
     _user, cost, user_id, username, full_name = charge
+    progress_message = await send_wait_message(
+        message,
+        text="<b>Iltimos kuting...</b>\nTarjima qilinmoqda.",
+    )
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             result = await translate_text(text, source, target)
     except Exception as error:  # noqa: BLE001
+        await clear_wait_message(progress_message)
         await message.answer(
             f"<b>Tarjima xatosi</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
             reply_markup=translate_keyboard(source, target),
         )
         return
+    await clear_wait_message(progress_message)
 
     await state.set_state(TranslateState.waiting_text)
     await message.answer(

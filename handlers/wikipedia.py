@@ -15,6 +15,7 @@ from aiogram.types import (
 from aiogram.utils.chat_action import ChatActionSender
 
 from services.ai_store import AIStore
+from services.request_feedback import clear_wait_message, send_wait_message
 from services.token_billing import ensure_balance
 from services.wikipedia_client import search_wikipedia_summary
 
@@ -143,17 +144,23 @@ async def wikipedia_query_handler(
     if charge is None:
         return
     _user, cost, user_id, username, full_name = charge
+    progress_message = await send_wait_message(
+        message,
+        text="<b>Iltimos kuting...</b>\nWikipedia qidiruvi bajarilmoqda.",
+    )
 
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             data = await search_wikipedia_summary(query, preferred_lang=lang)
     except Exception as error:  # noqa: BLE001
+        await clear_wait_message(progress_message)
         await message.answer(
             f"<b>Wikipedia xatosi</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
             reply_markup=wikipedia_keyboard(lang),
         )
         return
+    await clear_wait_message(progress_message)
 
     summary = str(data.get("summary", "")).strip()
     if len(summary) > WIKIPEDIA_MAX_SUMMARY:

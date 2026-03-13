@@ -16,6 +16,7 @@ from aiogram.utils.chat_action import ChatActionSender
 
 from services.ai_store import AIStore
 from services.group_command_mode import is_group_chat
+from services.request_feedback import clear_wait_message, send_wait_message
 from services.token_billing import ensure_balance
 from services.weather_client import (
     build_weather_html,
@@ -198,15 +199,21 @@ async def weather_city_message(message: Message, ai_store: AIStore) -> None:
     if charge is None:
         return
     _user, cost, user_id, username, full_name = charge
+    progress_message = await send_wait_message(
+        message,
+        text="<b>Iltimos kuting...</b>\nOb-havo ma'lumoti olinmoqda.",
+    )
     try:
         await _send_weather_by_city(message, city)
     except (ValueError, RuntimeError, TimeoutError, ConnectionError) as error:
+        await clear_wait_message(progress_message)
         await message.answer(
             f"<b>Ob-havo xatosi</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
             reply_markup=weather_city_keyboard(),
         )
     except Exception as error:  # noqa: BLE001
+        await clear_wait_message(progress_message)
         logger.exception("Weather modulida kutilmagan xatolik")
         await message.answer(
             f"<b>Kutilmagan xatolik</b>\n{html.escape(str(error))}",
@@ -214,6 +221,7 @@ async def weather_city_message(message: Message, ai_store: AIStore) -> None:
             reply_markup=weather_city_keyboard(),
         )
     else:
+        await clear_wait_message(progress_message)
         await ai_store.charge_tokens(
             user_id=user_id,
             username=username,
@@ -235,17 +243,23 @@ async def weather_city_location_message(message: Message, ai_store: AIStore) -> 
     if charge is None:
         return
     _user, cost, user_id, username, full_name = charge
+    progress_message = await send_wait_message(
+        message,
+        text="<b>Iltimos kuting...</b>\nOb-havo ma'lumoti olinmoqda.",
+    )
     try:
         await _send_weather_by_location(
             message, message.location.latitude, message.location.longitude
         )
     except (ValueError, RuntimeError, TimeoutError, ConnectionError) as error:
+        await clear_wait_message(progress_message)
         await message.answer(
             f"<b>Ob-havo xatosi</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
             reply_markup=weather_location_keyboard(),
         )
     except Exception as error:  # noqa: BLE001
+        await clear_wait_message(progress_message)
         logger.exception("Weather modulida kutilmagan xatolik")
         await message.answer(
             f"<b>Kutilmagan xatolik</b>\n{html.escape(str(error))}",
@@ -253,6 +267,7 @@ async def weather_city_location_message(message: Message, ai_store: AIStore) -> 
             reply_markup=weather_location_keyboard(),
         )
     else:
+        await clear_wait_message(progress_message)
         await ai_store.charge_tokens(
             user_id=user_id,
             username=username,
@@ -274,17 +289,23 @@ async def weather_location_message(message: Message, ai_store: AIStore) -> None:
     if charge is None:
         return
     _user, cost, user_id, username, full_name = charge
+    progress_message = await send_wait_message(
+        message,
+        text="<b>Iltimos kuting...</b>\nOb-havo ma'lumoti olinmoqda.",
+    )
     try:
         await _send_weather_by_location(
             message, message.location.latitude, message.location.longitude
         )
     except (ValueError, RuntimeError, TimeoutError, ConnectionError) as error:
+        await clear_wait_message(progress_message)
         await message.answer(
             f"<b>Ob-havo xatosi</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
             reply_markup=weather_location_keyboard(),
         )
     except Exception as error:  # noqa: BLE001
+        await clear_wait_message(progress_message)
         logger.exception("Weather modulida kutilmagan xatolik")
         await message.answer(
             f"<b>Kutilmagan xatolik</b>\n{html.escape(str(error))}",
@@ -292,6 +313,7 @@ async def weather_location_message(message: Message, ai_store: AIStore) -> None:
             reply_markup=weather_location_keyboard(),
         )
     else:
+        await clear_wait_message(progress_message)
         await ai_store.charge_tokens(
             user_id=user_id,
             username=username,

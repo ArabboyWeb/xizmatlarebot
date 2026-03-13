@@ -3,6 +3,8 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from services.load_control import run_with_limit
+
 TINYURL_CREATE_URL = "https://api.tinyurl.com/create"
 TINYURL_LEGACY_URL = "https://tinyurl.com/api-create.php"
 HTTP_TIMEOUT_SECONDS = 15
@@ -64,13 +66,16 @@ async def _shorten_official(url: str, api_token: str, domain: str) -> str:
 
 
 async def shorten_url(url: str) -> tuple[str, str]:
-    clean_url = _validate_url(url)
-    api_token = os.getenv("TINYURL_API_TOKEN", "").strip()
-    domain = os.getenv("TINYURL_DOMAIN", "tinyurl.com").strip() or "tinyurl.com"
+    async def _run() -> tuple[str, str]:
+        clean_url = _validate_url(url)
+        api_token = os.getenv("TINYURL_API_TOKEN", "").strip()
+        domain = os.getenv("TINYURL_DOMAIN", "tinyurl.com").strip() or "tinyurl.com"
 
-    if api_token:
-        short = await _shorten_official(clean_url, api_token=api_token, domain=domain)
-        return short, "official"
+        if api_token:
+            short = await _shorten_official(clean_url, api_token=api_token, domain=domain)
+            return short, "official"
 
-    short = await _shorten_legacy(clean_url)
-    return short, "legacy"
+        short = await _shorten_legacy(clean_url)
+        return short, "legacy"
+
+    return await run_with_limit("api", _run)

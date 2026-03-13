@@ -15,6 +15,7 @@ from aiogram.types import (
 from aiogram.utils.chat_action import ChatActionSender
 
 from services.ai_store import AIStore
+from services.request_feedback import clear_wait_message, send_wait_message
 from services.rapidapi_shazam_client import shazam_autocomplete
 from services.token_billing import ensure_balance
 
@@ -140,17 +141,23 @@ async def shazam_query_handler(
     if charge is None:
         return
     _user, cost, user_id, username, full_name = charge
+    progress_message = await send_wait_message(
+        message,
+        text="<b>Iltimos kuting...</b>\nMusiqa qidiruvi bajarilmoqda.",
+    )
 
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             data = await shazam_autocomplete(query, locale="en-US")
     except Exception as error:  # noqa: BLE001
+        await clear_wait_message(progress_message)
         await message.answer(
             f"<b>Shazam xatosi</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
             reply_markup=shazam_prompt_keyboard(),
         )
         return
+    await clear_wait_message(progress_message)
 
     await state.set_state(ShazamState.waiting_query)
     await message.answer(

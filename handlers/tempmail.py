@@ -17,6 +17,7 @@ from aiogram.utils.chat_action import ChatActionSender
 
 from services.ai_store import AIStore
 from services.group_command_mode import is_group_chat
+from services.request_feedback import clear_wait_message, send_wait_message
 from services.token_billing import ensure_balance
 from services.tempmail_client import (
     TempMailMessagePreview,
@@ -173,6 +174,10 @@ async def tempmail_command_handler(
     if charge is None:
         return
     _user, cost, user_id, username, full_name = charge
+    progress_message = await send_wait_message(
+        message,
+        text="<b>Iltimos kuting...</b>\nTemporary email ma'lumotlari olinmoqda.",
+    )
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             if existing_mailbox:
@@ -189,11 +194,13 @@ async def tempmail_command_handler(
                     "Xabar ID o'qish uchun <code>/mailread</code> yuboring."
                 )
     except Exception as error:  # noqa: BLE001
+        await clear_wait_message(progress_message)
         await message.answer(
             f"<b>1secmail xatosi</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
         )
         return
+    await clear_wait_message(progress_message)
     await message.answer(
         text,
         parse_mode="HTML",
@@ -371,18 +378,24 @@ async def tempmail_read_message_handler(
     if charge is None:
         return
     _user, cost, user_id, username, full_name = charge
+    progress_message = await send_wait_message(
+        message,
+        text="<b>Iltimos kuting...</b>\nInbox xabari o'qilmoqda.",
+    )
 
     try:
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             mailbox = await _ensure_mailbox(state)
             payload = await read_message(mailbox, message_id=message_id)
     except Exception as error:  # noqa: BLE001
+        await clear_wait_message(progress_message)
         await message.answer(
             f"<b>Xabarni o'qishda xato</b>\n{html.escape(str(error))}",
             parse_mode="HTML",
             reply_markup=read_keyboard(),
         )
         return
+    await clear_wait_message(progress_message)
 
     from_email = html.escape(str(payload.get("from", "")).strip() or "Nomalum")
     subject = html.escape(str(payload.get("subject", "")).strip() or "(No subject)")

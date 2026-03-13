@@ -3,6 +3,8 @@ from typing import Any
 
 import aiohttp
 
+from services.load_control import run_with_limit
+
 HTTP_TIMEOUT_SECONDS = 25
 
 
@@ -45,20 +47,23 @@ async def rapidapi_get(
     url: str,
     params: dict[str, str | int] | None = None,
 ) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(
-            url,
-            params=params,
-            headers=_headers(host),
-        ) as response:
-            payload = await response.json(content_type=None)
-            if response.status >= 400:
-                raise RuntimeError(_extract_error_message(payload, response.status))
+    async def _run() -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                url,
+                params=params,
+                headers=_headers(host),
+            ) as response:
+                payload = await response.json(content_type=None)
+                if response.status >= 400:
+                    raise RuntimeError(_extract_error_message(payload, response.status))
 
-    if not isinstance(payload, dict):
-        raise RuntimeError("RapidAPI noto'g'ri formatda javob qaytardi.")
-    return payload
+        if not isinstance(payload, dict):
+            raise RuntimeError("RapidAPI noto'g'ri formatda javob qaytardi.")
+        return payload
+
+    return await run_with_limit("api", _run)
 
 
 async def rapidapi_post_form(
@@ -67,26 +72,29 @@ async def rapidapi_post_form(
     url: str,
     data: dict[str, str],
 ) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
-    headers = _headers(
-        host,
-        extra={
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-    )
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(
-            url,
-            data=data,
-            headers=headers,
-        ) as response:
-            payload = await response.json(content_type=None)
-            if response.status >= 400:
-                raise RuntimeError(_extract_error_message(payload, response.status))
+    async def _run() -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        headers = _headers(
+            host,
+            extra={
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                url,
+                data=data,
+                headers=headers,
+            ) as response:
+                payload = await response.json(content_type=None)
+                if response.status >= 400:
+                    raise RuntimeError(_extract_error_message(payload, response.status))
 
-    if not isinstance(payload, dict):
-        raise RuntimeError("RapidAPI noto'g'ri formatda javob qaytardi.")
-    return payload
+        if not isinstance(payload, dict):
+            raise RuntimeError("RapidAPI noto'g'ri formatda javob qaytardi.")
+        return payload
+
+    return await run_with_limit("api", _run)
 
 
 async def rapidapi_post_json(
@@ -95,23 +103,26 @@ async def rapidapi_post_json(
     url: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
-    headers = _headers(
-        host,
-        extra={
-            "Content-Type": "application/json",
-        },
-    )
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(
-            url,
-            json=payload,
-            headers=headers,
-        ) as response:
-            body = await response.json(content_type=None)
-            if response.status >= 400:
-                raise RuntimeError(_extract_error_message(body, response.status))
+    async def _run() -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        headers = _headers(
+            host,
+            extra={
+                "Content-Type": "application/json",
+            },
+        )
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                url,
+                json=payload,
+                headers=headers,
+            ) as response:
+                body = await response.json(content_type=None)
+                if response.status >= 400:
+                    raise RuntimeError(_extract_error_message(body, response.status))
 
-    if not isinstance(body, dict):
-        raise RuntimeError("RapidAPI noto'g'ri formatda javob qaytardi.")
-    return body
+        if not isinstance(body, dict):
+            raise RuntimeError("RapidAPI noto'g'ri formatda javob qaytardi.")
+        return body
+
+    return await run_with_limit("api", _run)

@@ -5,6 +5,7 @@ from typing import Any
 
 import aiohttp
 
+from services.load_control import run_with_limit
 from services.rapidapi_client import HTTP_TIMEOUT_SECONDS, rapidapi_get
 
 JSEARCH_HOST = "jsearch.p.rapidapi.com"
@@ -112,19 +113,22 @@ def _country_terms(country: str) -> list[str]:
 
 
 async def _get_json(url: str, params: dict[str, str | int] | None = None) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "User-Agent": "Mozilla/5.0 (XizmatlarBot/1.0)",
-    }
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(url, params=params) as response:
-            payload = await response.json(content_type=None)
-            if response.status >= 400:
-                raise RuntimeError(f"HTTP {response.status}")
-    if not isinstance(payload, dict):
-        raise RuntimeError("Fallback jobs API noto'g'ri formatda javob qaytardi.")
-    return payload
+    async def _run() -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": "Mozilla/5.0 (XizmatlarBot/1.0)",
+        }
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, params=params) as response:
+                payload = await response.json(content_type=None)
+                if response.status >= 400:
+                    raise RuntimeError(f"HTTP {response.status}")
+        if not isinstance(payload, dict):
+            raise RuntimeError("Fallback jobs API noto'g'ri formatda javob qaytardi.")
+        return payload
+
+    return await run_with_limit("api", _run)
 
 
 def _extract_remotive_jobs(

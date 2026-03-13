@@ -5,6 +5,8 @@ from urllib.parse import quote
 
 import aiohttp
 
+from services.load_control import run_with_limit
+
 WIKI_API_TEMPLATE = "https://{lang}.wikipedia.org/w/api.php"
 HTTP_TIMEOUT_SECONDS = 15
 DEFAULT_USER_AGENT = (
@@ -13,33 +15,36 @@ DEFAULT_USER_AGENT = (
 
 
 async def _request_json(lang: str, params: dict[str, str | int]) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
-    url = WIKI_API_TEMPLATE.format(lang=lang)
-    request_params: dict[str, str | int] = {
-        "format": "json",
-        "formatversion": 2,
-    }
-    request_params.update(params)
+    async def _run() -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        url = WIKI_API_TEMPLATE.format(lang=lang)
+        request_params: dict[str, str | int] = {
+            "format": "json",
+            "formatversion": 2,
+        }
+        request_params.update(params)
 
-    headers = {
-        "User-Agent": os.getenv("HTTP_USER_AGENT", "").strip() or DEFAULT_USER_AGENT,
-        "Accept": "application/json, text/plain, */*",
-    }
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(url, params=request_params) as response:
-            if response.status >= 500:
-                raise RuntimeError("Wikipedia xizmati vaqtincha ishlamayapti.")
-            if response.status >= 400:
-                body = (await response.text())[:180]
-                raise RuntimeError(
-                    f"Wikipedia API xatosi: HTTP {response.status}. {body}"
-                )
-            response.raise_for_status()
-            payload = await response.json(content_type=None)
+        headers = {
+            "User-Agent": os.getenv("HTTP_USER_AGENT", "").strip() or DEFAULT_USER_AGENT,
+            "Accept": "application/json, text/plain, */*",
+        }
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, params=request_params) as response:
+                if response.status >= 500:
+                    raise RuntimeError("Wikipedia xizmati vaqtincha ishlamayapti.")
+                if response.status >= 400:
+                    body = (await response.text())[:180]
+                    raise RuntimeError(
+                        f"Wikipedia API xatosi: HTTP {response.status}. {body}"
+                    )
+                response.raise_for_status()
+                payload = await response.json(content_type=None)
 
-    if not isinstance(payload, dict):
-        raise RuntimeError("Wikipedia API notogri javob qaytardi.")
-    return payload
+        if not isinstance(payload, dict):
+            raise RuntimeError("Wikipedia API notogri javob qaytardi.")
+        return payload
+
+    return await run_with_limit("api", _run)
 
 
 async def _search_title(query: str, lang: str) -> str:
