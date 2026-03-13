@@ -82,7 +82,7 @@ try:
 except Exception:  # pragma: no cover
     BOT_TIMEZONE = timezone.utc
 HOLD_TTL_SECONDS = max(30, _read_int("AI_CREDIT_HOLD_TTL_SECONDS", 300))
-TRANSACTION_LOG_LIMIT = max(10, _read_int("AI_TRANSACTION_LOG_LIMIT", 100))
+TRANSACTION_LOG_LIMIT = max(0, _read_int("AI_TRANSACTION_LOG_LIMIT", 100))
 
 
 def _add_months(value: datetime, months: int = 1) -> datetime:
@@ -451,6 +451,9 @@ class AIStore:
         note: str = "",
         estimated_ai_cost_usd: float = 0.0,
     ) -> None:
+        if TRANSACTION_LOG_LIMIT <= 0:
+            user["transaction_log"] = []
+            return
         history = user.setdefault("transaction_log", [])
         if not isinstance(history, list):
             history = []
@@ -664,9 +667,12 @@ class AIStore:
         user["ai_budget_spent_usd"] = ai_budget_spent_usd
         if not isinstance(user.get("usage_counters"), dict):
             user["usage_counters"] = {}
-        if not isinstance(user.get("transaction_log"), list):
+        if TRANSACTION_LOG_LIMIT <= 0:
             user["transaction_log"] = []
-        del user["transaction_log"][:-TRANSACTION_LOG_LIMIT]
+        elif not isinstance(user.get("transaction_log"), list):
+            user["transaction_log"] = []
+        if TRANSACTION_LOG_LIMIT > 0:
+            del user["transaction_log"][:-TRANSACTION_LOG_LIMIT]
 
         user["referrer_id"] = int(user.get("referrer_id", 0) or 0)
         user["referral_count"] = max(0, int(user.get("referral_count", 0) or 0))

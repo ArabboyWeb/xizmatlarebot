@@ -398,17 +398,37 @@ async def run_polling_forever(
 
 
 async def main() -> None:
-    load_dotenv(override=True)
+    load_dotenv(override=False)
     install_group_command_mode()
     logging.basicConfig(
         level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+    main_logger = logging.getLogger("Main")
+
+    database_url = os.getenv("DATABASE_URL", "").strip() or os.getenv(
+        "NEON_DATABASE_URL", ""
+    ).strip()
+    if not database_url:
+        main_logger.warning(
+            "DATABASE_URL yo'q. Bot local JSON storage bilan ishlaydi va redeploydan keyin data saqlanmaydi."
+        )
+
+    ai_log_channel_id = os.getenv("AI_LOG_CHANNEL_ID", "").strip()
+    ai_log_channel_link = os.getenv("AI_LOG_CHANNEL_LINK", "").strip()
+    if not ai_log_channel_id:
+        main_logger.warning(
+            "AI_LOG_CHANNEL_ID sozlanmagan. AI log kanal auto-detect holati local faylda turadi va redeploydan keyin yo'qolishi mumkin."
+        )
+        if ai_log_channel_link.startswith("https://t.me/+"):
+            main_logger.warning(
+                "AI_LOG_CHANNEL_LINK invite link ko'rinishida. Redeploydan keyin ishonchli AI logging uchun numeric AI_LOG_CHANNEL_ID kiriting."
+            )
 
     try:
         bot_token = _read_bot_token()
     except ValueError as error:
-        logging.getLogger("Main").error(str(error))
+        main_logger.error(str(error))
         return
 
     upload_limit_mb = _read_int(
@@ -428,7 +448,7 @@ async def main() -> None:
     try:
         me = await bot.get_me()
     except Exception as error:  # noqa: BLE001
-        logging.getLogger("Main").warning("Bot username olinmadi: %s", error)
+        main_logger.warning("Bot username olinmadi: %s", error)
     else:
         resolved_username = _normalize_bot_username(getattr(me, "username", "") or "")
         env_username = _normalize_bot_username(os.getenv("BOT_USERNAME", ""))
@@ -444,7 +464,7 @@ async def main() -> None:
         await analytics_store.startup()
         await ai_store.startup()
     except Exception as error:  # noqa: BLE001
-        logging.getLogger("Main").error("Storage ishga tushmadi: %s", error)
+        main_logger.error("Storage ishga tushmadi: %s", error)
         await bot.session.close()
         return
     analytics_middleware = AnalyticsMiddleware(analytics_store)

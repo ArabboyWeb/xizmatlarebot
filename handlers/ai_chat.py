@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 import time
 
@@ -40,6 +41,7 @@ from services.token_pricing import (
 from ui.premium import upgrade_prompt_keyboard
 
 router = Router(name="ai_chat")
+logger = logging.getLogger(__name__)
 AI_STREAM_PREVIEW_LIMIT = 3200
 AI_FINAL_TEXT_LIMIT = 3200
 
@@ -727,8 +729,8 @@ async def ai_prompt_handler(
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
         )
-    except Exception:
-        pass
+    except Exception as error:  # noqa: BLE001
+        logger.warning("AI channel log yuborilmadi: %s", error)
     await state.set_state(AIChatState.waiting_prompt)
 
 

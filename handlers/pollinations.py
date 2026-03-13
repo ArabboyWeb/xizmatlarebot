@@ -474,8 +474,8 @@ async def pollinations_prompt_handler(
             image_bytes=image,
             file_name=file_name,
         )
-    except Exception:
-        pass
+    except Exception as error:  # noqa: BLE001
+        logger.warning("AI image log kanalga yuborilmadi: %s", error)
     if current_plan == "premium":
         await message.answer(
             f"Qolgan kredit: <b>{int(updated_user.get('credit_balance', updated_user.get('token_balance', 0)) or 0)}</b>",

@@ -50,12 +50,14 @@ pip install -r requirements.txt
    - `BOT_REFERRAL_INVITER_BONUS`
    - `BOT_REFERRAL_INVITEE_BONUS`
    - `BOT_USERNAME`
-   - `AI_LOG_CHANNEL_ID` yoki botni kanalga admin qilib qo'shing
+   - `AI_LOG_CHANNEL_ID` tavsiya qilinadi; redeployda AI log kanali yo'qolmasligi uchun numeric ID kiriting
    - `AI_LOG_CHANNEL_LINK`
+   - `AI_TRANSACTION_LOG_LIMIT=0` qilsangiz AI kredit history DBda yig'ilmaydi
 6. Admin panel uchun:
    - `ADMIN_USER_IDS`
-7. Neon/Postgres uchun ixtiyoriy:
+7. Neon/Postgres uchun:
    - `DATABASE_URL`
+   - redeployda user data saqlanishi uchun hostingda bu qiymat bo'lishi kerak
 8. Temp mail fallback uchun ixtiyoriy:
    - `MAILTM_API_BASE`
 
@@ -69,7 +71,7 @@ pip install -r requirements.txt
 - AI chat matnlari bazaga yozilmaydi; ular Telegram arxiv kanaliga yuboriladi.
 - AI arxiv kanali foydalanuvchiga ko'rsatilmaydi.
 - AI ichida user-level `plan` va `model` selector bor.
-- Agar `AI_LOG_CHANNEL_ID` bo'sh bo'lsa, bot kanalga qo'shilganda `channel_post` yoki `my_chat_member` orqali kanal ID auto-detect qilinadi.
+- Agar `AI_LOG_CHANNEL_ID` bo'sh bo'lsa, bot kanalga qo'shilganda `channel_post` yoki `my_chat_member` orqali kanal ID auto-detect qilinadi, lekin bu local state redeploydan keyin yo'qolishi mumkin.
 - AI plan boshqaruvi uchun admin buyruqlari bor:
   - `/ai`
   - `/ai_diag`
