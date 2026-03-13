@@ -282,6 +282,12 @@ def register_core_handlers(
                     "🎁 Referal bonusi qo'shildi.\n"
                     f"Sizga: <b>{int(result.get('invitee_bonus', 0) or 0)}</b> token"
                 )
+        if message.from_user is not None and referrer_id > 0 and notice:
+            invitee_bonus = int(result.get("invitee_bonus", 0) or 0)
+            notice = (
+                "🎁 Referral bonusi qo'shildi.\n"
+                f"Sizga: <b>{invitee_bonus}</b> kredit"
+            )
         await _answer_main_menu(message, ai_store=ai_store, notice=notice)
 
     @dispatcher.message(Command("menu"))

@@ -26,19 +26,13 @@ def _format_balance(balance: int) -> str:
 
 def _main_rows(is_admin: bool) -> list[list[InlineKeyboardButton]]:
     rows = [
-        [InlineKeyboardButton(text="AI", callback_data="menu:section:ai")],
-        [
-            InlineKeyboardButton(text="Media", callback_data="menu:section:media"),
-            InlineKeyboardButton(text="Asboblar", callback_data="menu:section:tools"),
-        ],
-        [
-            InlineKeyboardButton(text="Qidiruv", callback_data="menu:section:search"),
-            InlineKeyboardButton(text="Kabinet", callback_data="menu:section:cabinet"),
-        ],
-        [InlineKeyboardButton(text="Premium", callback_data="premium:page")],
+        [InlineKeyboardButton(text="🤖 Sun'iy intellekt", callback_data="menu:section:ai")],
+        [InlineKeyboardButton(text="🎬 Media Save", callback_data="menu:section:media")],
+        [InlineKeyboardButton(text="🧰 Boshqa xizmatlar", callback_data="menu:section:tools")],
+        [InlineKeyboardButton(text="👤 Kabinet", callback_data="menu:section:cabinet")],
     ]
     if is_admin:
-        rows.append([InlineKeyboardButton(text="Admin panel", callback_data="admin:panel")])
+        rows.append([InlineKeyboardButton(text="🛠 Admin panel", callback_data="admin:panel")])
     return rows
 
 
@@ -49,55 +43,45 @@ def _section_rows(
 ) -> list[list[InlineKeyboardButton]]:
     if section == "ai":
         return [
-            [
-                InlineKeyboardButton(text="AI Chat", callback_data="services:ai"),
-                InlineKeyboardButton(text="Rasm yaratish", callback_data="services:pollinations"),
-            ],
-            [InlineKeyboardButton(text="PDF/Doc konvertor", callback_data="services:converter")],
-            [InlineKeyboardButton(text="Orqaga", callback_data="menu:main")],
+            [InlineKeyboardButton(text="💬 AI Chat", callback_data="services:ai")],
+            [InlineKeyboardButton(text="🎨 Rasm yaratish", callback_data="services:pollinations")],
+            [InlineKeyboardButton(text="📄 PDF / Doc konvertor", callback_data="services:converter")],
+            [InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="menu:main")],
         ]
     if section == "media":
         return [
-            [InlineKeyboardButton(text="YT / Insta / TikTok saver", callback_data="services:youtube")],
-            [
-                InlineKeyboardButton(text="Fayl saqlash", callback_data="services:save"),
-                InlineKeyboardButton(text="Musiqa qidirish", callback_data="services:shazam"),
-            ],
-            [InlineKeyboardButton(text="Orqaga", callback_data="menu:main")],
+            [InlineKeyboardButton(text="📥 YT / Insta / TikTok", callback_data="services:youtube")],
+            [InlineKeyboardButton(text="📎 Fayl saqlash", callback_data="services:save")],
+            [InlineKeyboardButton(text="🎵 Musiqa aniqlash", callback_data="services:shazam")],
+            [InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="menu:main")],
         ]
     if section == "tools":
         return [
-            [
-                InlineKeyboardButton(text="Valyuta", callback_data="services:currency"),
-                InlineKeyboardButton(text="Ob-havo", callback_data="services:weather"),
-            ],
-            [
-                InlineKeyboardButton(text="Tarjimon", callback_data="services:translate"),
-                InlineKeyboardButton(text="Link qisqartirish", callback_data="services:tinyurl"),
-            ],
-            [InlineKeyboardButton(text="Konvertor", callback_data="services:converter")],
-            [InlineKeyboardButton(text="Orqaga", callback_data="menu:main")],
+            [InlineKeyboardButton(text="💱 Valyuta", callback_data="services:currency")],
+            [InlineKeyboardButton(text="🌦 Ob-havo", callback_data="services:weather")],
+            [InlineKeyboardButton(text="🌐 Tarjimon", callback_data="services:translate")],
+            [InlineKeyboardButton(text="🔗 Link qisqartirish", callback_data="services:tinyurl")],
+            [InlineKeyboardButton(text="🔄 Konvertor", callback_data="services:converter")],
+            [InlineKeyboardButton(text="💼 Ish qidirish", callback_data="services:jobs")],
+            [InlineKeyboardButton(text="📚 Wikipedia", callback_data="services:wikipedia")],
+            [InlineKeyboardButton(text="✉️ Temp Mail", callback_data="services:tempmail")],
+            [InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="menu:main")],
         ]
     if section == "search":
         return [
-            [
-                InlineKeyboardButton(text="Ish qidirish", callback_data="services:jobs"),
-                InlineKeyboardButton(text="Wikipedia", callback_data="services:wikipedia"),
-            ],
-            [InlineKeyboardButton(text="Vaqtinchalik pochta", callback_data="services:tempmail")],
-            [InlineKeyboardButton(text="Orqaga", callback_data="menu:main")],
+            [InlineKeyboardButton(text="💼 Ish qidirish", callback_data="services:jobs")],
+            [InlineKeyboardButton(text="📚 Wikipedia", callback_data="services:wikipedia")],
+            [InlineKeyboardButton(text="✉️ Temp Mail", callback_data="services:tempmail")],
+            [InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="menu:main")],
         ]
     if section == "cabinet":
         rows = [
-            [InlineKeyboardButton(text="Referral markazi", callback_data="cabinet:referral")],
-            [
-                InlineKeyboardButton(text="AI Chat", callback_data="services:ai"),
-                InlineKeyboardButton(text="Premium", callback_data="premium:page"),
-            ],
-            [InlineKeyboardButton(text="Orqaga", callback_data="menu:main")],
+            [InlineKeyboardButton(text="💎 Premium", callback_data="premium:page")],
+            [InlineKeyboardButton(text="🎁 Referral markazi", callback_data="cabinet:referral")],
+            [InlineKeyboardButton(text="⬅️ Bosh menyu", callback_data="menu:main")],
         ]
         if referral_link.startswith("https://t.me/"):
-            rows.insert(1, [InlineKeyboardButton(text="Referral linkni ochish", url=referral_link)])
+            rows.insert(2, [InlineKeyboardButton(text="🔗 Referral linkni ochish", url=referral_link)])
         return rows
     return _main_rows(False)
 
@@ -144,28 +128,13 @@ def main_menu_text(
         is_admin,
     )
     text = (
-        "<b>Assalomu alaykum. Xizmatlar E-Botga xush kelibsiz.</b>\n"
-        "Pastdagi bo'limlardan birini tanlang.\n\n"
-        f"Holat: <b>{_plan_label(user_plan)}</b>\n"
-        f"Balans: <b>{_format_balance(token_balance)} kredit</b>\n"
-        f"Taklif qilgan do'stlaringiz: <b>{max(0, int(referral_count))} ta</b>\n\n"
-        "Premium sahifasida to'lov, karta va kredit tizimini ko'rishingiz mumkin."
+        "<b>👋 Xizmatlar E-Bot</b>\n"
+        "Kerakli bo'limni tanlang.\n\n"
+        f"👑 Reja: <b>{_plan_label(user_plan)}</b>\n"
+        f"💳 Balans: <b>{_format_balance(token_balance)} kredit</b>"
     )
     if notice:
         text += f"\n\n{notice}"
-    if referrer_id > 0:
-        text += f"\n\nSizni taklif qilgan ID: <code>{int(referrer_id)}</code>"
-    if lifetime_tokens_earned > 0 or lifetime_tokens_spent > 0:
-        text += (
-            f"\nOlingan kredit: <b>{_format_balance(lifetime_tokens_earned)}</b>"
-            f"\nSarflangan kredit: <b>{_format_balance(lifetime_tokens_spent)}</b>"
-        )
-    if referral_inviter_bonus > 0 or referral_invitee_bonus > 0:
-        text += (
-            "\n\nReferral bonuslari:"
-            f"\n- Do'stingizga: <b>{int(referral_invitee_bonus)}</b> kredit"
-            f"\n- Sizga: <b>{int(referral_inviter_bonus)}</b> kredit"
-        )
     return text
 
 
@@ -189,37 +158,23 @@ def section_menu_text(
     _ = (referral_link, free_reset_tokens, free_reset_hours)
     if section == "ai":
         return (
-            "<b>AI</b>\n"
-            "Kerakli AI bo'limini tanlang.\n\n"
-            "- AI Chat\n"
-            "- Rasm yaratish\n"
-            "- PDF/Doc konvertor"
+            "<b>🤖 Sun'iy intellekt</b>\n"
+            "AI chat, rasm yaratish va fayl konvertor bo'limi."
         )
     if section == "media":
         return (
-            "<b>Media</b>\n"
-            "Media va yuklab olish xizmatlari shu yerda.\n\n"
-            "- YT / Instagram / TikTok saver\n"
-            "- Fayl saqlash\n"
-            "- Musiqa qidirish"
+            "<b>🎬 Media Save</b>\n"
+            "Video, audio va fayl saqlash xizmatlari shu yerda."
         )
     if section == "tools":
         return (
-            "<b>Asboblar</b>\n"
-            "Tez ishlatiladigan yordamchi xizmatlar.\n\n"
-            "- Valyuta kursi\n"
-            "- Ob-havo\n"
-            "- Tarjimon\n"
-            "- Link qisqartirish\n"
-            "- Fayl konvertori"
+            "<b>🧰 Boshqa xizmatlar</b>\n"
+            "Tarjima, ob-havo, valyuta, qidiruv va boshqa foydali servislar."
         )
     if section == "search":
         return (
-            "<b>Qidiruv</b>\n"
-            "Kerakli ma'lumotni topish uchun bo'limni tanlang.\n\n"
-            "- Ish qidirish\n"
-            "- Wikipedia\n"
-            "- Vaqtinchalik pochta"
+            "<b>🔎 Qidiruv</b>\n"
+            "Kerakli ma'lumotni topish uchun xizmatni tanlang."
         )
     if section == "cabinet":
         reset_label = (
@@ -228,21 +183,20 @@ def section_menu_text(
             else str(reset_date or "").replace("T", " ")[:16]
         )
         text = (
-            "<b>Kabinet</b>\n"
-            "Hisobingiz bo'yicha qisqa ma'lumot.\n\n"
-            f"Holat: <b>{_plan_label(user_plan)}</b>\n"
-            f"Balans: <b>{_format_balance(token_balance)} kredit</b>\n"
-            f"Referral: <b>{max(0, int(referral_count))} ta</b>\n"
-            f"Olingan: <b>{_format_balance(lifetime_tokens_earned)} kredit</b>\n"
-            f"Sarflangan: <b>{_format_balance(lifetime_tokens_spent)} kredit</b>\n\n"
-            "Referral markazi va Premium uchun tugmalardan foydalaning."
+            "<b>👤 Kabinet</b>\n"
+            "Hisobingiz bo'yicha asosiy ma'lumotlar.\n\n"
+            f"👑 Reja: <b>{_plan_label(user_plan)}</b>\n"
+            f"💳 Balans: <b>{_format_balance(token_balance)} kredit</b>\n"
+            f"🎁 Referral: <b>{max(0, int(referral_count))} ta</b>\n"
+            f"📈 Olingan: <b>{_format_balance(lifetime_tokens_earned)} kredit</b>\n"
+            f"📉 Sarflangan: <b>{_format_balance(lifetime_tokens_spent)} kredit</b>"
         )
         if str(user_plan or "").strip().lower() == "premium":
-            text += f"\n\nPremium reset: <b>{premium_monthly_credits()} kredit / oy</b>"
+            text += f"\n\n💎 Premium limiti: <b>{premium_monthly_credits()} kredit / oy</b>"
         elif reset_label:
-            text += f"\n\nKeyingi free reset: <b>{reset_label}</b>"
+            text += f"\n\n⏳ Keyingi free reset: <b>{reset_label}</b>"
         if referrer_id > 0:
-            text += f"\n\nSizni taklif qilgan ID: <code>{int(referrer_id)}</code>"
+            text += f"\n\n👥 Taklif qilgan ID: <code>{int(referrer_id)}</code>"
         if referral_inviter_bonus > 0 or referral_invitee_bonus > 0:
             text += (
                 "\n\nReferral bonuslari:"
@@ -267,12 +221,12 @@ def referral_menu_text(
 ) -> str:
     _ = (free_reset_tokens, free_reset_hours)
     rows = [
-        "<b>Referral markazi</b>",
+        "<b>🎁 Referral markazi</b>",
         "",
         f"Taklif qilgan do'stlaringiz: <b>{max(0, int(referral_count))} ta</b>",
     ]
     if referrer_id > 0:
-        rows.append(f"Sizni taklif qilgan ID: <code>{int(referrer_id)}</code>")
+        rows.append(f"Taklif qilgan ID: <code>{int(referrer_id)}</code>")
     if referral_inviter_bonus > 0 or referral_invitee_bonus > 0:
         rows.extend(
             [
@@ -286,12 +240,12 @@ def referral_menu_text(
         rows.extend(["", f"Referral link: <code>{referral_link}</code>"])
     refill_label = str(free_reset_date or "").replace("T", " ")[:16]
     if refill_label:
-        rows.append(f"Keyingi free reset: <b>{refill_label}</b>")
+        rows.append(f"⏳ Keyingi free reset: <b>{refill_label}</b>")
     rows.extend(
         [
             "",
-            "Linkni bir tugma bilan nusxalab yuboring.",
-            "Do'stingiz sizning linkingiz orqali kirsa, ikkalangiz ham bonus olasiz.",
+            "Linkni bitta tugma bilan nusxalab yuboring.",
+            "Do'stingiz shu link orqali kirsa, ikkalangiz ham bonus olasiz.",
         ]
     )
     return "\n".join(rows)
@@ -303,14 +257,14 @@ def referral_keyboard(referral_link: str = "") -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="Referral linkni nusxalash",
+                    text="📋 Referral linkni nusxalash",
                     copy_text=CopyTextButton(text=referral_link),
                 )
             ]
         )
     if referral_link.startswith("https://t.me/"):
-        rows.append([InlineKeyboardButton(text="Referral linkni ochish", url=referral_link)])
-    rows.append([InlineKeyboardButton(text="Kabinet", callback_data="menu:section:cabinet")])
+        rows.append([InlineKeyboardButton(text="🔗 Referral linkni ochish", url=referral_link)])
+    rows.append([InlineKeyboardButton(text="👤 Kabinet", callback_data="menu:section:cabinet")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
