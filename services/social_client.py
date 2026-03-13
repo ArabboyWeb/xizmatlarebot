@@ -50,6 +50,100 @@ HTTP_TIMEOUT_SECONDS = 40
 YTDLP_TIKTOK_TIMEOUT_SECONDS = 15
 logger = logging.getLogger(__name__)
 
+_SOCIAL_PRIVATE_HINTS = (
+    "private yoki cheklangan video yuborildi",
+    "private post",
+    "private video",
+    "private account",
+    "this video is private",
+    "account is private",
+    "followers only",
+    "only available to followers",
+    "not available to you",
+    "requires login to view this content",
+    "login required to view this content",
+    "sign in if you've been granted access to this post",
+)
+_SOCIAL_TEMPORARY_HINTS = (
+    "confirm you're not a bot",
+    "confirm you are not a bot",
+    "captcha",
+    "challenge_required",
+    "challenge required",
+    "checkpoint_required",
+    "checkpoint required",
+    "too many requests",
+    "rate limit",
+    "rate-limit",
+    "temporarily unavailable",
+    "try again later",
+    "please wait a few minutes",
+    "cdn javob bermadi",
+    "timeout",
+    "handshake",
+    "ssl",
+)
+_SOCIAL_NOT_FOUND_HINTS = (
+    "video topilmadi",
+    "ma'lumotlari topilmadi",
+    "linki topilmadi",
+    "page not found",
+    "not found",
+)
+
+
+def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
+    return any(hint in text for hint in hints)
+
+
+def is_social_limit_error_message(message: str) -> bool:
+    lowered = str(message or "").strip().lower()
+    return "limit" in lowered or "katta" in lowered
+
+
+def is_social_private_error_message(message: str) -> bool:
+    lowered = str(message or "").strip().lower()
+    if not lowered:
+        return False
+    if _contains_any(lowered, _SOCIAL_PRIVATE_HINTS):
+        return True
+    return "private" in lowered and "post" in lowered
+
+
+def is_social_temporary_error_message(message: str) -> bool:
+    lowered = str(message or "").strip().lower()
+    if not lowered:
+        return False
+    if _contains_any(lowered, _SOCIAL_TEMPORARY_HINTS):
+        return True
+    if is_social_private_error_message(lowered):
+        return False
+    return "login" in lowered or "sign in" in lowered
+
+
+def is_social_not_found_error_message(message: str) -> bool:
+    lowered = str(message or "").strip().lower()
+    if not lowered:
+        return False
+    if _contains_any(lowered, _SOCIAL_NOT_FOUND_HINTS):
+        return True
+    return "video" in lowered and "topilmadi" in lowered
+
+
+def social_error_public_text(error: Exception) -> str:
+    message = str(error or "").strip()
+    if isinstance(error, ValueError) and message:
+        return message
+    if is_social_limit_error_message(message):
+        return "Fayl limitdan katta."
+    if is_social_private_error_message(message):
+        return "Private yoki cheklangan video yuborildi. Public link yuboring."
+    if is_social_temporary_error_message(message):
+        return "Platform video linkini vaqtincha chekladi. Birozdan keyin qayta urinib ko'ring."
+    if is_social_not_found_error_message(message):
+        return "Videoni topib bo'lmadi. Reel yoki TikTok video link yuboring."
+    return "Instagram yoki TikTok videoni yuklab bo'lmadi. Public video link yuboring."
+
 
 class _YTDLPLogger:
     def debug(self, message: str) -> None:
@@ -235,7 +329,7 @@ def _download_social_video_sync(
 
         files = _downloaded_files(target_dir)
         if not files:
-            raise RuntimeError("Video topilmadi yoki private post yuborildi.")
+            raise RuntimeError("Video topilmadi.")
 
         output = max(
             files,
@@ -419,20 +513,30 @@ async def download_social_video(
                         str(ytdlp_error or "").lower(),
                     ]
                 )
-                if "limit" in lowered or "katta" in lowered:
+                if is_social_limit_error_message(lowered):
                     raise RuntimeError("Fayl limitdan katta.")
-                if "private" in lowered or "login" in lowered or "sign in" in lowered:
+                if is_social_private_error_message(lowered):
                     raise RuntimeError("Private yoki cheklangan video yuborildi.")
-                if "timeout" in lowered or "handshake" in lowered or "ssl" in lowered:
+                if is_social_temporary_error_message(lowered):
                     raise RuntimeError(
-                        "TikTok CDN javob bermadi. Birozdan keyin qayta urinib ko'ring."
+                        "Platform video linkini vaqtincha chekladi."
                     ) from ytdlp_error
                 raise RuntimeError(
                     "TikTok videoni yuklab bo'lmadi. Public video link yuboring."
                 ) from ytdlp_error
-    return await run_in_thread_with_limit(
-        "download",
-        _download_social_video_sync,
-        url,
-        max_bytes=limit,
-    )
+    try:
+        return await run_in_thread_with_limit(
+            "download",
+            _download_social_video_sync,
+            url,
+            max_bytes=limit,
+        )
+    except Exception as error:
+        lowered = str(error or "").lower()
+        if is_social_limit_error_message(lowered):
+            raise RuntimeError("Fayl limitdan katta.") from error
+        if is_social_private_error_message(lowered):
+            raise RuntimeError("Private yoki cheklangan video yuborildi.") from error
+        if is_social_temporary_error_message(lowered):
+            raise RuntimeError("Platform video linkini vaqtincha chekladi.") from error
+        raise

@@ -30,6 +30,7 @@ from services.saver_client import (
 from services.social_client import (
     download_social_video,
     is_social_video_url,
+    social_error_public_text,
     social_platform_name,
 )
 from services.token_billing import ensure_balance, finalize_charge
@@ -249,17 +250,7 @@ def _public_youtube_error(error: Exception, *, action: str) -> str:
 
 
 def _public_social_error(error: Exception) -> str:
-    message = str(error or "").strip()
-    lowered = message.lower()
-    if isinstance(error, ValueError) and message:
-        return message
-    if "private" in lowered or "login" in lowered or "sign in" in lowered:
-        return "Private yoki cheklangan video yuborildi. Public link yuboring."
-    if "video topilmadi" in lowered:
-        return "Videoni topib bo'lmadi. Reel yoki TikTok video link yuboring."
-    if "limit" in lowered or "katta" in lowered:
-        return "Tanlangan fayl limitdan katta."
-    return "Instagram yoki TikTok videoni yuklab bo'lmadi. Public video link yuboring."
+    return social_error_public_text(error)
 
 
 async def _download_and_send_youtube(
