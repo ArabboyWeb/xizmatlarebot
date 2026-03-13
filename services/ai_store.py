@@ -518,6 +518,9 @@ class AIStore:
             reserved_cost += max(0.0, float(record.get("estimated_ai_cost_usd", 0.0) or 0.0))
         return reserved_credits, round(reserved_cost, 6)
 
+    def _clone_public(self, value: Any) -> Any:
+        return json.loads(json.dumps(value))
+
     def _normalize_user_locked(
         self,
         user: dict[str, Any],
@@ -688,7 +691,6 @@ class AIStore:
             int(user.get("credits_spent", 0) or 0),
             int(user.get("lifetime_tokens_spent", 0) or 0),
         )
-        user["updated_at"] = _iso(now)
         return user
 
     async def ensure_user(
@@ -710,6 +712,8 @@ class AIStore:
             users = self._data.setdefault("users", {})
             key = str(int(user_id))
             user = users.get(key)
+            created = False
+            original: dict[str, Any] | None = None
             if not isinstance(user, dict):
                 user = self._default_user(
                     user_id=user_id,
@@ -717,13 +721,18 @@ class AIStore:
                     full_name=full_name,
                 )
                 users[key] = user
+                created = True
+            else:
+                original = self._clone_public(user)
             normalized = self._normalize_user_locked(
                 user,
                 username=username,
                 full_name=full_name,
             )
-            await self._save_locked()
-            return json.loads(json.dumps(normalized))
+            if created or normalized != original:
+                normalized["updated_at"] = _iso(_utc_now())
+                await self._save_locked()
+            return self._clone_public(normalized)
 
     async def _db_ensure_user(
         self,
@@ -737,48 +746,47 @@ class AIStore:
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 row = await connection.fetchrow(
-                    """
-                    INSERT INTO ai_users (
-                        user_id,
+                    "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                    int(user_id),
+                )
+                if row is None:
+                    await connection.execute(
+                        """
+                        INSERT INTO ai_users (
+                            user_id,
+                            username,
+                            full_name,
+                            current_plan,
+                            token_balance,
+                            credit_balance,
+                            monthly_credits,
+                            credits_added,
+                            free_requests_used,
+                            free_reset_date,
+                            reset_date,
+                            daily_credit_cap,
+                            daily_credits_used_date,
+                            ai_budget_cap_usd,
+                            lifetime_tokens_earned,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES ($1, $2, $3, 'free', $4, $4, 0, $4, 0, $5, $5, $6, $7, $8, $4, NOW(), NOW())
+                        ON CONFLICT (user_id) DO NOTHING
+                        """,
+                        int(user_id),
                         username,
                         full_name,
-                        current_plan,
-                        token_balance,
-                        credit_balance,
-                        monthly_credits,
-                        credits_added,
-                        free_requests_used,
-                        free_reset_date,
-                        reset_date,
-                        daily_credit_cap,
-                        daily_credits_used_date,
-                        ai_budget_cap_usd,
-                        lifetime_tokens_earned,
-                        created_at,
-                        updated_at
+                        free_signup_tokens(),
+                        _next_token_refill(),
+                        premium_daily_credit_cap(),
+                        _today_key(),
+                        premium_safe_ai_budget_usd(),
                     )
-                    VALUES ($1, $2, $3, 'free', $4, $4, 0, $4, 0, $5, $5, $6, $7, $8, $4, NOW(), NOW())
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        username = CASE
-                            WHEN EXCLUDED.username <> '' THEN EXCLUDED.username
-                            ELSE ai_users.username
-                        END,
-                        full_name = CASE
-                            WHEN EXCLUDED.full_name <> '' THEN EXCLUDED.full_name
-                            ELSE ai_users.full_name
-                        END,
-                        updated_at = NOW()
-                    RETURNING *
-                    """,
-                    int(user_id),
-                    username,
-                    full_name,
-                    free_signup_tokens(),
-                    _next_token_refill(),
-                    premium_daily_credit_cap(),
-                    _today_key(),
-                    premium_safe_ai_budget_usd(),
-                )
+                    row = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                        int(user_id),
+                    )
                 if row is None:
                     raise RuntimeError("AI foydalanuvchi yozuvi yaratilmadi.")
                 return await self._db_normalize_user_locked(
@@ -797,13 +805,14 @@ class AIStore:
         full_name: str,
     ) -> dict[str, Any]:
         current = self._serialize_row(row)
-        original = json.loads(json.dumps(current))
+        original = self._clone_public(current)
         normalized = self._normalize_user_locked(
             current,
             username=username,
             full_name=full_name,
         )
         if normalized != original:
+            normalized["updated_at"] = _iso(_utc_now())
             await self._db_write_user_locked(connection, normalized)
             final_row = await connection.fetchrow(
                 "SELECT * FROM ai_users WHERE user_id = $1",

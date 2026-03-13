@@ -71,4 +71,4 @@ def should_require_persistent_database() -> bool:
         return False
     if _env_flag("REQUIRE_DATABASE"):
         return True
-    return running_in_hosted_env()
+    return False

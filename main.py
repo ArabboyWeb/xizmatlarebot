@@ -34,6 +34,7 @@ from services.analytics_store import AnalyticsMiddleware, AnalyticsStore
 from services.group_command_mode import command_menu_text, install_group_command_mode, is_group_chat
 from services.storage_config import (
     resolve_database_url,
+    running_in_hosted_env,
     should_require_persistent_database,
 )
 from services.token_pricing import (
@@ -417,9 +418,14 @@ async def main() -> None:
                 "Persistent database topilmadi. Hosted deploy local JSON fallback bilan ishga tushirilmaydi. DATABASE_URL yoki Postgres envlarini sozlang."
             )
             return
-        main_logger.warning(
+        warning_text = (
             "DATABASE_URL yo'q. Bot local JSON storage bilan ishlaydi va redeploydan keyin data saqlanmaydi."
         )
+        if running_in_hosted_env():
+            warning_text = (
+                "Hosted deploy DATABASE_URLsiz ishga tushdi. Bot local JSON storage bilan ishlaydi va redeploydan keyin data saqlanmaydi."
+            )
+        main_logger.warning(warning_text)
 
     ai_log_channel_id = os.getenv("AI_LOG_CHANNEL_ID", "").strip()
     ai_log_channel_link = os.getenv("AI_LOG_CHANNEL_LINK", "").strip()

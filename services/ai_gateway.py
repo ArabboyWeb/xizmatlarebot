@@ -6,6 +6,7 @@ import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 import aiohttp
@@ -185,6 +186,7 @@ LEGACY_MODEL_ALIASES = {
 }
 
 
+@lru_cache(maxsize=1)
 def _manual_model_specs() -> dict[str, AIModelSpec]:
     premium_default_cost = premium_ai_chat_credit_cost()
     return {

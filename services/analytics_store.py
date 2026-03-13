@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -53,6 +54,12 @@ class AnalyticsStore:
         self._loaded = False
         self._data: dict[str, Any] = {}
         self._pool: Any | None = None
+        self._dirty = False
+        self._last_saved_monotonic = 0.0
+        self._save_interval_seconds = max(
+            0,
+            _read_int("ANALYTICS_LOCAL_SAVE_INTERVAL_SECONDS", 2),
+        )
 
     def _default_data(self) -> dict[str, Any]:
         return {
@@ -88,6 +95,9 @@ class AnalyticsStore:
         await self._ensure_loaded()
 
     async def shutdown(self) -> None:
+        if self._pool is None and self._loaded and self._dirty:
+            async with self._lock:
+                await self._save_if_due_locked(force=True)
         if self._pool is not None:
             await self._pool.close()
             self._pool = None
@@ -147,6 +157,7 @@ class AnalyticsStore:
             else:
                 self._data = self._default_data()
             self._loaded = True
+            self._last_saved_monotonic = time.monotonic()
 
     async def _save_locked(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,6 +167,17 @@ class AnalyticsStore:
             encoding="utf-8",
         )
         temp_path.replace(self.path)
+        self._dirty = False
+        self._last_saved_monotonic = time.monotonic()
+
+    async def _save_if_due_locked(self, *, force: bool = False) -> None:
+        if not self._dirty:
+            return
+        if not force and self._save_interval_seconds > 0:
+            elapsed = time.monotonic() - self._last_saved_monotonic
+            if elapsed < float(self._save_interval_seconds):
+                return
+        await self._save_locked()
 
     def _touch_user_locked(
         self,
@@ -194,7 +216,8 @@ class AnalyticsStore:
         await self._ensure_loaded()
         async with self._lock:
             callback(self._data)
-            await self._save_locked()
+            self._dirty = True
+            await self._save_if_due_locked()
 
     async def _db_touch_user(
         self,
