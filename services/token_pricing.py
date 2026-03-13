@@ -226,12 +226,62 @@ def free_signup_tokens() -> int:
     return 100
 
 
+def free_ai_chat_limit_per_day() -> int:
+    return max(1, _read_int("AI_FREE_CHAT_DAILY_LIMIT", 10))
+
+
+def free_ai_chat_cooldown_seconds() -> int:
+    return max(0, _read_int("AI_FREE_CHAT_COOLDOWN_SECONDS", 600))
+
+
+def free_ai_image_limit_per_day() -> int:
+    return max(1, _read_int("AI_FREE_IMAGE_DAILY_LIMIT", 5))
+
+
+def free_ai_image_cooldown_seconds() -> int:
+    return max(0, _read_int("AI_FREE_IMAGE_COOLDOWN_SECONDS", 1800))
+
+
+def premium_ai_image_cooldown_seconds() -> int:
+    return max(0, _read_int("AI_PREMIUM_IMAGE_COOLDOWN_SECONDS", 30))
+
+
+def premium_ai_chat_credit_cost() -> int:
+    return max(1, _read_int("AI_PREMIUM_CHAT_CREDITS", 1))
+
+
+def premium_ai_image_credit_cost() -> int:
+    return max(1, _read_int("AI_PREMIUM_IMAGE_CREDITS", 25))
+
+
+def premium_ai_search_credit_cost() -> int:
+    return max(10, _read_int("AI_PREMIUM_SEARCH_CREDITS", 50))
+
+
+def premium_monthly_credits() -> int:
+    return max(1, _read_int("AI_PREMIUM_MONTHLY_CREDITS", 1000))
+
+
+def premium_safe_ai_budget_usd() -> float:
+    raw = os.getenv("AI_PREMIUM_SAFE_AI_BUDGET_USD", "").strip()
+    if not raw:
+        return 0.70
+    try:
+        return max(0.01, float(raw))
+    except ValueError:
+        return 0.70
+
+
+def premium_daily_credit_cap() -> int:
+    return max(0, _read_int("AI_PREMIUM_DAILY_CREDIT_CAP", 0))
+
+
 def premium_daily_tokens() -> int:
-    return 100
+    return premium_monthly_credits()
 
 
 def premium_upgrade_tokens() -> int:
-    return 1000
+    return premium_monthly_credits()
 
 
 def refill_interval_hours() -> int:
@@ -239,7 +289,7 @@ def refill_interval_hours() -> int:
 
 
 def premium_price_uzs() -> int:
-    return 15_000
+    return 19_999
 
 
 def premium_card_number() -> str:
@@ -256,8 +306,30 @@ def referral_invitee_bonus() -> int:
 
 def ai_min_cost(plan: str) -> int:
     if normalize_plan(plan) == "premium":
-        return max(3, _read_int("BOT_AI_PREMIUM_MIN_COST", 5))
-    return max(4, _read_int("BOT_AI_FREE_MIN_COST", 8))
+        return premium_ai_chat_credit_cost()
+    return 0
+
+
+SERVICE_DAILY_LIMITS: dict[str, dict[str, int]] = {
+    "save_direct": {"free": 5, "premium": 50},
+    "save_youtube_video": {"free": 3, "premium": 20},
+    "save_youtube_audio": {"free": 5, "premium": 30},
+    "save_social_video": {"free": 10, "premium": 0},
+    "youtube_download_video": {"free": 3, "premium": 20},
+    "youtube_download_audio": {"free": 5, "premium": 30},
+    "social_download": {"free": 10, "premium": 0},
+}
+
+
+def service_daily_limit(service_key: str, *, plan: str) -> int | None:
+    key = resolve_service_key(service_key)
+    config = SERVICE_DAILY_LIMITS.get(key)
+    if not isinstance(config, dict):
+        return None
+    normalized_plan = normalize_plan(plan)
+    if normalized_plan not in config:
+        return None
+    return max(0, int(config[normalized_plan]))
 
 
 SERVICE_TARIFFS: dict[str, ServiceTariff] = {
@@ -266,8 +338,16 @@ SERVICE_TARIFFS: dict[str, ServiceTariff] = {
         label="AI Chat",
         category="ai",
         free_cost=8,
-        premium_cost=5,
+        premium_cost=premium_ai_chat_credit_cost(),
         description="AI matnli muloqot",
+    ),
+    "ai_web_search": ServiceTariff(
+        key="ai_web_search",
+        label="AI Web Search",
+        category="ai",
+        free_cost=9999,
+        premium_cost=premium_ai_search_credit_cost(),
+        description="Pullik web qidiruv va sintez javobi",
     ),
     "currency_refresh": ServiceTariff(
         key="currency_refresh",
@@ -418,7 +498,7 @@ SERVICE_TARIFFS: dict[str, ServiceTariff] = {
         label="AI rasm yaratish",
         category="ai",
         free_cost=20,
-        premium_cost=16,
+        premium_cost=premium_ai_image_credit_cost(),
         description="AI image generation",
     ),
     "converter_word_to_pdf": ServiceTariff(
@@ -466,6 +546,7 @@ SERVICE_TARIFFS: dict[str, ServiceTariff] = {
 
 LEGACY_SERVICE_KEY_ALIASES: dict[str, str] = {
     "ai": "ai_chat",
+    "ai_search": "ai_web_search",
     "currency": "currency_refresh",
     "download:direct": "save_direct",
     "download:instagram_video": "social_download",

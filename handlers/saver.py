@@ -39,7 +39,7 @@ from services.saver_client import (
     download_url,
     saver_limit_bytes,
 )
-from services.token_billing import ensure_balance
+from services.token_billing import ensure_balance, finalize_charge
 from services.youtube_client import download_youtube
 
 try:
@@ -752,7 +752,9 @@ async def save_url_handler(
         )
     except Exception:
         return
-    await ai_store.charge_tokens(
+    await finalize_charge(
+        ai_store,
+        service_key="save_direct",
         user_id=user_id,
         username=username,
         full_name=full_name,

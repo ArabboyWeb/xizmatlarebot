@@ -1,25 +1,37 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from aiogram import BaseMiddleware
 
+from services.ai_costs import premium_safe_ai_budget_usd
 from services.ai_gateway import MODEL_ALIAS_AUTO, clamp_selected_plan, effective_selected_plan
 from services.token_pricing import (
+    free_ai_chat_cooldown_seconds,
+    free_ai_chat_limit_per_day,
+    free_ai_image_cooldown_seconds,
+    free_ai_image_limit_per_day,
     free_daily_tokens,
     free_signup_tokens,
     normalize_plan,
+    premium_ai_image_cooldown_seconds,
+    premium_daily_credit_cap,
     premium_daily_tokens,
+    premium_monthly_credits,
     premium_upgrade_tokens,
     referral_invitee_bonus,
     referral_inviter_bonus,
     refill_interval_hours,
     resolve_service_key,
+    service_daily_limit,
 )
 
 try:
@@ -63,6 +75,28 @@ def _read_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+try:
+    BOT_TIMEZONE = ZoneInfo(os.getenv("BOT_TIMEZONE", "Asia/Tashkent"))
+except Exception:  # pragma: no cover
+    BOT_TIMEZONE = timezone.utc
+HOLD_TTL_SECONDS = max(30, _read_int("AI_CREDIT_HOLD_TTL_SECONDS", 300))
+TRANSACTION_LOG_LIMIT = max(10, _read_int("AI_TRANSACTION_LOG_LIMIT", 100))
+
+
+def _add_months(value: datetime, months: int = 1) -> datetime:
+    normalized = value.astimezone(timezone.utc)
+    month_index = normalized.month - 1 + months
+    year = normalized.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(normalized.day, calendar.monthrange(year, month)[1])
+    return normalized.replace(year=year, month=month, day=day)
+
+
+def _today_key(now: datetime | None = None) -> str:
+    target = (now or _utc_now()).astimezone(BOT_TIMEZONE)
+    return target.date().isoformat()
 
 
 def _plan_rpm(plan: str) -> int:
@@ -141,6 +175,7 @@ class AIStore:
     def _default_data(self) -> dict[str, Any]:
         return {
             "users": {},
+            "credit_holds": {},
             "premium_requests": {},
             "premium_request_sequence": 0,
         }
@@ -178,6 +213,20 @@ class AIStore:
             selected_plan TEXT NOT NULL DEFAULT 'auto',
             selected_model TEXT NOT NULL DEFAULT 'auto',
             token_balance BIGINT NOT NULL DEFAULT 100,
+            credit_balance BIGINT NOT NULL DEFAULT 100,
+            monthly_credits BIGINT NOT NULL DEFAULT 0,
+            credits_spent BIGINT NOT NULL DEFAULT 0,
+            credits_added BIGINT NOT NULL DEFAULT 0,
+            last_credit_reset TIMESTAMPTZ,
+            premium_started_at TIMESTAMPTZ,
+            next_credit_reset_at TIMESTAMPTZ,
+            daily_credit_cap BIGINT NOT NULL DEFAULT 0,
+            daily_credits_used BIGINT NOT NULL DEFAULT 0,
+            daily_credits_used_date TEXT NOT NULL DEFAULT '',
+            ai_budget_cap_usd DOUBLE PRECISION NOT NULL DEFAULT 0.70,
+            ai_budget_spent_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+            usage_counters JSONB NOT NULL DEFAULT '{}'::jsonb,
+            transaction_log JSONB NOT NULL DEFAULT '[]'::jsonb,
             free_requests_used BIGINT NOT NULL DEFAULT 0,
             free_reset_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             reset_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -194,6 +243,19 @@ class AIStore:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS credit_holds (
+            hold_id TEXT PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            service_key TEXT NOT NULL,
+            credits BIGINT NOT NULL DEFAULT 0,
+            estimated_ai_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'held',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            expires_at TIMESTAMPTZ NOT NULL,
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+        );
+        CREATE INDEX IF NOT EXISTS idx_credit_holds_user_status
+            ON credit_holds (user_id, status, expires_at DESC);
         CREATE TABLE IF NOT EXISTS premium_requests (
             request_id BIGSERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL,
@@ -224,6 +286,48 @@ class AIStore:
             )
             await connection.execute(
                 "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS selected_model TEXT NOT NULL DEFAULT 'auto';"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS credit_balance BIGINT NOT NULL DEFAULT 100;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS monthly_credits BIGINT NOT NULL DEFAULT 0;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS credits_spent BIGINT NOT NULL DEFAULT 0;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS credits_added BIGINT NOT NULL DEFAULT 0;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS last_credit_reset TIMESTAMPTZ;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS premium_started_at TIMESTAMPTZ;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS next_credit_reset_at TIMESTAMPTZ;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS daily_credit_cap BIGINT NOT NULL DEFAULT 0;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS daily_credits_used BIGINT NOT NULL DEFAULT 0;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS daily_credits_used_date TEXT NOT NULL DEFAULT '';"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS ai_budget_cap_usd DOUBLE PRECISION NOT NULL DEFAULT 0.70;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS ai_budget_spent_usd DOUBLE PRECISION NOT NULL DEFAULT 0;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS usage_counters JSONB NOT NULL DEFAULT '{}'::jsonb;"
+            )
+            await connection.execute(
+                "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS transaction_log JSONB NOT NULL DEFAULT '[]'::jsonb;"
             )
             await connection.execute(
                 "ALTER TABLE ai_users ADD COLUMN IF NOT EXISTS referrer_id BIGINT;"
@@ -269,6 +373,7 @@ class AIStore:
             if not isinstance(self._data, dict):
                 self._data = self._default_data()
             self._data.setdefault("users", {})
+            self._data.setdefault("credit_holds", {})
             self._data.setdefault("premium_requests", {})
             self._data["premium_request_sequence"] = int(
                 self._data.get("premium_request_sequence", 0) or 0
@@ -302,7 +407,21 @@ class AIStore:
             "current_plan": "free",
             "selected_plan": MODEL_ALIAS_AUTO,
             "selected_model": MODEL_ALIAS_AUTO,
+            "credit_balance": signup_tokens,
             "token_balance": signup_tokens,
+            "monthly_credits": 0,
+            "credits_spent": 0,
+            "credits_added": signup_tokens,
+            "last_credit_reset": "",
+            "premium_started_at": "",
+            "next_credit_reset_at": "",
+            "daily_credit_cap": premium_daily_credit_cap(),
+            "daily_credits_used": 0,
+            "daily_credits_used_date": _today_key(now),
+            "ai_budget_cap_usd": premium_safe_ai_budget_usd(),
+            "ai_budget_spent_usd": 0.0,
+            "usage_counters": {},
+            "transaction_log": [],
             "free_requests_used": 0,
             "free_reset_date": _iso(next_refill),
             "reset_date": _iso(next_refill),
@@ -319,6 +438,85 @@ class AIStore:
             "created_at": _iso(now),
             "updated_at": _iso(now),
         }
+
+    def _append_transaction_log_locked(
+        self,
+        user: dict[str, Any],
+        *,
+        tx_type: str,
+        service_key: str,
+        amount: int,
+        balance_after: int,
+        status: str = "ok",
+        note: str = "",
+        estimated_ai_cost_usd: float = 0.0,
+    ) -> None:
+        history = user.setdefault("transaction_log", [])
+        if not isinstance(history, list):
+            history = []
+            user["transaction_log"] = history
+        history.append(
+            {
+                "id": uuid4().hex,
+                "timestamp": _iso(_utc_now()),
+                "type": str(tx_type or "").strip().lower(),
+                "service_key": resolve_service_key(service_key),
+                "amount": max(0, int(amount)),
+                "balance_after": max(0, int(balance_after)),
+                "status": str(status or "ok").strip().lower(),
+                "estimated_ai_cost_usd": round(max(0.0, float(estimated_ai_cost_usd)), 6),
+                "note": str(note or "").strip(),
+            }
+        )
+        del history[:-TRANSACTION_LOG_LIMIT]
+
+    def _usage_entry_locked(
+        self,
+        user: dict[str, Any],
+        *,
+        service_key: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        usage = user.setdefault("usage_counters", {})
+        if not isinstance(usage, dict):
+            usage = {}
+            user["usage_counters"] = usage
+        key = resolve_service_key(service_key)
+        entry = usage.get(key)
+        if not isinstance(entry, dict):
+            entry = {"day": _today_key(now), "count": 0, "last_used_at": ""}
+            usage[key] = entry
+        current_day = _today_key(now)
+        if str(entry.get("day", "") or "") != current_day:
+            entry["day"] = current_day
+            entry["count"] = 0
+        entry["last_used_at"] = str(entry.get("last_used_at", "") or "")
+        return entry
+
+    def _active_holds_locked(
+        self,
+        *,
+        user_id: int,
+        now: datetime | None = None,
+    ) -> tuple[int, float]:
+        current = now or _utc_now()
+        holds = self._data.setdefault("credit_holds", {})
+        reserved_credits = 0
+        reserved_cost = 0.0
+        for hold_id, record in list(holds.items()):
+            if not isinstance(record, dict):
+                holds.pop(hold_id, None)
+                continue
+            if int(record.get("user_id", 0) or 0) != int(user_id):
+                continue
+            expires_at = _parse_dt(record.get("expires_at"))
+            status = str(record.get("status", "held") or "held").strip().lower()
+            if status != "held" or expires_at <= current:
+                holds.pop(hold_id, None)
+                continue
+            reserved_credits += max(0, int(record.get("credits", 0) or 0))
+            reserved_cost += max(0.0, float(record.get("estimated_ai_cost_usd", 0.0) or 0.0))
+        return reserved_credits, round(reserved_cost, 6)
 
     def _normalize_user_locked(
         self,
@@ -341,40 +539,134 @@ class AIStore:
         user["selected_model"] = _normalize_selected_model(
             user.get("selected_model", MODEL_ALIAS_AUTO)
         )
-        token_balance = max(0, int(user.get("token_balance", 0) or 0))
-        lifetime_tokens_earned = max(0, int(user.get("lifetime_tokens_earned", 0) or 0))
+        credit_balance = max(
+            0,
+            int(
+                user.get(
+                    "credit_balance",
+                    user.get("token_balance", 0),
+                )
+                or 0
+            ),
+        )
+        credits_added = max(
+            0,
+            int(
+                user.get(
+                    "credits_added",
+                    user.get("lifetime_tokens_earned", credit_balance),
+                )
+                or 0
+            ),
+        )
+        credits_spent = max(
+            0,
+            int(
+                user.get(
+                    "credits_spent",
+                    user.get("lifetime_tokens_spent", 0),
+                )
+                or 0
+            ),
+        )
+        monthly_credits = (
+            premium_monthly_credits()
+            if current_plan == "premium"
+            else max(0, int(user.get("monthly_credits", 0) or 0))
+        )
+        daily_credit_cap = max(
+            0,
+            int(
+                user.get(
+                    "daily_credit_cap",
+                    premium_daily_credit_cap(),
+                )
+                or 0
+            ),
+        )
+        ai_budget_cap_usd = round(
+            max(
+                0.01,
+                float(user.get("ai_budget_cap_usd", premium_safe_ai_budget_usd()) or 0.70),
+            ),
+            6,
+        )
+        ai_budget_spent_usd = round(
+            max(0.0, float(user.get("ai_budget_spent_usd", 0.0) or 0.0)),
+            6,
+        )
+        today_key = _today_key(now)
+        daily_credits_used_date = str(user.get("daily_credits_used_date", "") or "")
+        daily_credits_used = max(0, int(user.get("daily_credits_used", 0) or 0))
+        if daily_credits_used_date != today_key:
+            daily_credits_used = 0
+            daily_credits_used_date = today_key
+
         refill_default = _next_token_refill(now)
-        reset_raw = user.get("reset_date", "")
-        free_reset_raw = user.get("free_reset_date", "")
-        if current_plan == "premium":
-            refill_at = (
-                _parse_dt(reset_raw)
-                if str(reset_raw or "").strip()
-                else (
-                    _parse_dt(free_reset_raw)
-                    if str(free_reset_raw or "").strip()
-                    else refill_default
-                )
-            )
-        else:
-            refill_at = (
-                _parse_dt(free_reset_raw)
-                if str(free_reset_raw or "").strip()
-                else (
-                    _parse_dt(reset_raw)
-                    if str(reset_raw or "").strip()
-                    else refill_default
-                )
-            )
-        if now >= refill_at:
-            token_balance += _refill_amount(current_plan)
-            lifetime_tokens_earned += _refill_amount(current_plan)
+        free_reset_raw = user.get("free_reset_date", "") or user.get("reset_date", "")
+        free_refill_at = (
+            _parse_dt(free_reset_raw)
+            if str(free_reset_raw or "").strip()
+            else refill_default
+        )
+        if current_plan == "free" and now >= free_refill_at:
+            refill_amount = _refill_amount("free")
+            credit_balance += refill_amount
+            credits_added += refill_amount
             user["free_requests_used"] = 0
-            refill_at = _next_token_refill(now)
-        user["token_balance"] = token_balance
-        user["lifetime_tokens_earned"] = lifetime_tokens_earned
-        user["free_reset_date"] = _iso(refill_at)
-        user["reset_date"] = _iso(refill_at)
+            free_refill_at = _next_token_refill(now)
+        user["free_reset_date"] = _iso(free_refill_at)
+
+        premium_started_at = str(user.get("premium_started_at", "") or "").strip()
+        last_credit_reset = str(user.get("last_credit_reset", "") or "").strip()
+        next_credit_reset_at = str(user.get("next_credit_reset_at", "") or "").strip()
+        if current_plan == "premium":
+            if not premium_started_at or not next_credit_reset_at:
+                premium_started = now
+                last_reset = now
+                next_reset = _add_months(now, 1)
+                credit_balance = monthly_credits
+                credits_added = max(credits_added, 0) + monthly_credits
+                ai_budget_spent_usd = 0.0
+            else:
+                premium_started = _parse_dt(premium_started_at)
+                last_reset = _parse_dt(last_credit_reset) if last_credit_reset else premium_started
+                next_reset = _parse_dt(next_credit_reset_at)
+                if now >= next_reset:
+                    while now >= next_reset:
+                        last_reset = next_reset
+                        next_reset = _add_months(next_reset, 1)
+                    credit_balance = monthly_credits
+                    credits_added += monthly_credits
+                    ai_budget_spent_usd = 0.0
+                    daily_credits_used = 0
+                    daily_credits_used_date = today_key
+            user["premium_started_at"] = _iso(premium_started)
+            user["last_credit_reset"] = _iso(last_reset)
+            user["next_credit_reset_at"] = _iso(next_reset)
+            user["reset_date"] = _iso(next_reset)
+        else:
+            user["premium_started_at"] = premium_started_at
+            user["last_credit_reset"] = last_credit_reset
+            user["next_credit_reset_at"] = ""
+            user["reset_date"] = user["free_reset_date"]
+            monthly_credits = 0
+
+        user["credit_balance"] = max(0, int(credit_balance))
+        user["token_balance"] = int(user["credit_balance"])
+        user["monthly_credits"] = max(0, int(monthly_credits))
+        user["credits_added"] = max(credits_added, int(user["credit_balance"]))
+        user["credits_spent"] = credits_spent
+        user["daily_credit_cap"] = daily_credit_cap
+        user["daily_credits_used"] = daily_credits_used
+        user["daily_credits_used_date"] = daily_credits_used_date
+        user["ai_budget_cap_usd"] = ai_budget_cap_usd
+        user["ai_budget_spent_usd"] = ai_budget_spent_usd
+        if not isinstance(user.get("usage_counters"), dict):
+            user["usage_counters"] = {}
+        if not isinstance(user.get("transaction_log"), list):
+            user["transaction_log"] = []
+        del user["transaction_log"][:-TRANSACTION_LOG_LIMIT]
 
         user["referrer_id"] = int(user.get("referrer_id", 0) or 0)
         user["referral_count"] = max(0, int(user.get("referral_count", 0) or 0))
@@ -385,8 +677,13 @@ class AIStore:
             user["free_media_trial_used"] = False
         else:
             user["free_media_trial_used"] = bool(user.get("free_media_trial_used", False))
+        user["lifetime_tokens_earned"] = max(
+            int(user.get("credits_added", 0) or 0),
+            int(user.get("lifetime_tokens_earned", 0) or 0),
+        )
         user["lifetime_tokens_spent"] = max(
-            0, int(user.get("lifetime_tokens_spent", 0) or 0)
+            int(user.get("credits_spent", 0) or 0),
+            int(user.get("lifetime_tokens_spent", 0) or 0),
         )
         user["updated_at"] = _iso(now)
         return user
@@ -444,14 +741,20 @@ class AIStore:
                         full_name,
                         current_plan,
                         token_balance,
+                        credit_balance,
+                        monthly_credits,
+                        credits_added,
                         free_requests_used,
                         free_reset_date,
                         reset_date,
+                        daily_credit_cap,
+                        daily_credits_used_date,
+                        ai_budget_cap_usd,
                         lifetime_tokens_earned,
                         created_at,
                         updated_at
                     )
-                    VALUES ($1, $2, $3, 'free', $4, 0, $5, $5, $4, NOW(), NOW())
+                    VALUES ($1, $2, $3, 'free', $4, $4, 0, $4, 0, $5, $5, $6, $7, $8, $4, NOW(), NOW())
                     ON CONFLICT (user_id) DO UPDATE SET
                         username = CASE
                             WHEN EXCLUDED.username <> '' THEN EXCLUDED.username
@@ -469,6 +772,9 @@ class AIStore:
                     full_name,
                     free_signup_tokens(),
                     _next_token_refill(),
+                    premium_daily_credit_cap(),
+                    _today_key(),
+                    premium_safe_ai_budget_usd(),
                 )
                 if row is None:
                     raise RuntimeError("AI foydalanuvchi yozuvi yaratilmadi.")
@@ -487,90 +793,123 @@ class AIStore:
         username: str,
         full_name: str,
     ) -> dict[str, Any]:
-        now = _utc_now()
-        current_plan = str(row["current_plan"] or "free").strip().lower()
-        current_plan = normalize_plan(current_plan)
-        token_balance = int(row["token_balance"] or 0)
-        free_requests_used = int(row["free_requests_used"] or 0)
-        lifetime_tokens_earned = int(row["lifetime_tokens_earned"] or 0)
-        refill_default = _next_token_refill(now)
-        reset_raw = row["reset_date"]
-        free_reset_raw = row["free_reset_date"]
-        if current_plan == "premium":
-            refill_at = (
-                _parse_dt(reset_raw)
-                if reset_raw
-                else (_parse_dt(free_reset_raw) if free_reset_raw else refill_default)
-            )
-        else:
-            refill_at = (
-                _parse_dt(free_reset_raw)
-                if free_reset_raw
-                else (_parse_dt(reset_raw) if reset_raw else refill_default)
-            )
-
-        changed = False
-        if now >= refill_at:
-            refill_amount = _refill_amount(current_plan)
-            token_balance += refill_amount
-            lifetime_tokens_earned += refill_amount
-            free_requests_used = 0
-            refill_at = _next_token_refill(now)
-            changed = True
-
-        if (
-            changed
-            or _iso(_parse_dt(row["free_reset_date"])) != _iso(refill_at)
-            or _iso(_parse_dt(row["reset_date"])) != _iso(refill_at)
-            or int(row["token_balance"] or 0) != token_balance
-            or int(row["lifetime_tokens_earned"] or 0) != lifetime_tokens_earned
-            or int(row["free_requests_used"] or 0) != free_requests_used
-        ):
-            await connection.execute(
-                """
-                UPDATE ai_users
-                SET free_requests_used = $2,
-                    free_reset_date = $3,
-                    reset_date = $3,
-                    token_balance = $4,
-                    lifetime_tokens_earned = $5,
-                    updated_at = NOW()
-                WHERE user_id = $1
-                """,
-                int(row["user_id"]),
-                free_requests_used,
-                refill_at,
-                token_balance,
-                lifetime_tokens_earned,
-            )
-
-        trial_cycle_end_raw = row["free_media_trial_cycle_end"]
-        trial_cycle_end = (
-            _iso(_parse_dt(trial_cycle_end_raw)) if trial_cycle_end_raw else ""
+        current = self._serialize_row(row)
+        original = json.loads(json.dumps(current))
+        normalized = self._normalize_user_locked(
+            current,
+            username=username,
+            full_name=full_name,
         )
-        current_cycle_end = _iso(refill_at)
-        if trial_cycle_end != current_cycle_end:
-            await connection.execute(
-                """
-                UPDATE ai_users
-                SET free_media_trial_used = FALSE,
-                    free_media_trial_cycle_end = $2,
-                    updated_at = NOW()
-                WHERE user_id = $1
-                """,
+        if normalized != original:
+            await self._db_write_user_locked(connection, normalized)
+            final_row = await connection.fetchrow(
+                "SELECT * FROM ai_users WHERE user_id = $1",
                 int(row["user_id"]),
-                refill_at,
             )
+            if final_row is None:
+                raise RuntimeError("AI foydalanuvchi yozuvi topilmadi.")
+            return self._serialize_row(final_row)
+        return normalized
 
-        final_row = await connection.fetchrow(
-            "SELECT * FROM ai_users WHERE user_id = $1",
-            int(row["user_id"]),
+    async def _db_write_user_locked(self, connection: Any, user: dict[str, Any]) -> None:
+        await connection.execute(
+            """
+            UPDATE ai_users
+            SET username = $2,
+                full_name = $3,
+                current_plan = $4,
+                selected_plan = $5,
+                selected_model = $6,
+                token_balance = $7,
+                credit_balance = $8,
+                monthly_credits = $9,
+                credits_spent = $10,
+                credits_added = $11,
+                last_credit_reset = $12,
+                premium_started_at = $13,
+                next_credit_reset_at = $14,
+                daily_credit_cap = $15,
+                daily_credits_used = $16,
+                daily_credits_used_date = $17,
+                ai_budget_cap_usd = $18,
+                ai_budget_spent_usd = $19,
+                usage_counters = $20::jsonb,
+                transaction_log = $21::jsonb,
+                free_requests_used = $22,
+                free_reset_date = $23,
+                reset_date = $24,
+                last_request_at = $25,
+                total_prompt_tokens = $26,
+                total_completion_tokens = $27,
+                referrer_id = $28,
+                referral_count = $29,
+                referral_bonus_claimed = $30,
+                free_media_trial_used = $31,
+                free_media_trial_cycle_end = $32,
+                lifetime_tokens_earned = $33,
+                lifetime_tokens_spent = $34,
+                updated_at = NOW()
+            WHERE user_id = $1
+            """,
+            int(user["user_id"]),
+            str(user.get("username", "") or ""),
+            str(user.get("full_name", "") or ""),
+            str(user.get("current_plan", "free") or "free"),
+            str(user.get("selected_plan", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO),
+            str(user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO),
+            int(user.get("token_balance", 0) or 0),
+            int(user.get("credit_balance", 0) or 0),
+            int(user.get("monthly_credits", 0) or 0),
+            int(user.get("credits_spent", 0) or 0),
+            int(user.get("credits_added", 0) or 0),
+            (
+                _parse_dt(user.get("last_credit_reset"))
+                if str(user.get("last_credit_reset", "") or "").strip()
+                else None
+            ),
+            (
+                _parse_dt(user.get("premium_started_at"))
+                if str(user.get("premium_started_at", "") or "").strip()
+                else None
+            ),
+            (
+                _parse_dt(user.get("next_credit_reset_at"))
+                if str(user.get("next_credit_reset_at", "") or "").strip()
+                else None
+            ),
+            int(user.get("daily_credit_cap", 0) or 0),
+            int(user.get("daily_credits_used", 0) or 0),
+            str(user.get("daily_credits_used_date", "") or ""),
+            float(user.get("ai_budget_cap_usd", premium_safe_ai_budget_usd()) or 0.70),
+            float(user.get("ai_budget_spent_usd", 0.0) or 0.0),
+            json.dumps(user.get("usage_counters", {}), ensure_ascii=False),
+            json.dumps(user.get("transaction_log", []), ensure_ascii=False),
+            int(user.get("free_requests_used", 0) or 0),
+            _parse_dt(user.get("free_reset_date")),
+            _parse_dt(user.get("reset_date")),
+            (
+                _parse_dt(user.get("last_request_at"))
+                if str(user.get("last_request_at", "") or "").strip()
+                else None
+            ),
+            int(user.get("total_prompt_tokens", 0) or 0),
+            int(user.get("total_completion_tokens", 0) or 0),
+            int(user.get("referrer_id", 0) or 0) or None,
+            int(user.get("referral_count", 0) or 0),
+            bool(user.get("referral_bonus_claimed", False)),
+            bool(user.get("free_media_trial_used", False)),
+            _parse_dt(user.get("free_media_trial_cycle_end")),
+            int(user.get("lifetime_tokens_earned", 0) or 0),
+            int(user.get("lifetime_tokens_spent", 0) or 0),
         )
-        if final_row is None:
-            raise RuntimeError("AI foydalanuvchi yozuvi topilmadi.")
-        return self._serialize_row(final_row)
 
     def _serialize_row(self, row: Any) -> dict[str, Any]:
+        usage_counters = row["usage_counters"] if "usage_counters" in row else {}
+        if not isinstance(usage_counters, dict):
+            usage_counters = {}
+        transaction_log = row["transaction_log"] if "transaction_log" in row else []
+        if not isinstance(transaction_log, list):
+            transaction_log = []
         return {
             "user_id": int(row["user_id"]),
             "username": str(row["username"] or ""),
@@ -578,7 +917,33 @@ class AIStore:
             "current_plan": normalize_plan(str(row["current_plan"] or "free")),
             "selected_plan": str(row["selected_plan"] or MODEL_ALIAS_AUTO),
             "selected_model": str(row["selected_model"] or MODEL_ALIAS_AUTO),
+            "credit_balance": int(row["credit_balance"] or row["token_balance"] or 0),
             "token_balance": int(row["token_balance"] or 0),
+            "monthly_credits": int(row["monthly_credits"] or 0),
+            "credits_spent": int(row["credits_spent"] or row["lifetime_tokens_spent"] or 0),
+            "credits_added": int(row["credits_added"] or row["lifetime_tokens_earned"] or 0),
+            "last_credit_reset": (
+                _iso(_parse_dt(row["last_credit_reset"]))
+                if row["last_credit_reset"]
+                else ""
+            ),
+            "premium_started_at": (
+                _iso(_parse_dt(row["premium_started_at"]))
+                if row["premium_started_at"]
+                else ""
+            ),
+            "next_credit_reset_at": (
+                _iso(_parse_dt(row["next_credit_reset_at"]))
+                if row["next_credit_reset_at"]
+                else ""
+            ),
+            "daily_credit_cap": int(row["daily_credit_cap"] or 0),
+            "daily_credits_used": int(row["daily_credits_used"] or 0),
+            "daily_credits_used_date": str(row["daily_credits_used_date"] or ""),
+            "ai_budget_cap_usd": float(row["ai_budget_cap_usd"] or premium_safe_ai_budget_usd()),
+            "ai_budget_spent_usd": float(row["ai_budget_spent_usd"] or 0.0),
+            "usage_counters": usage_counters,
+            "transaction_log": transaction_log,
             "free_requests_used": int(row["free_requests_used"] or 0),
             "free_reset_date": _iso(_parse_dt(row["free_reset_date"])),
             "reset_date": _iso(_parse_dt(row["reset_date"])),
@@ -628,6 +993,581 @@ class AIStore:
         filtered = [item for item in history if isinstance(item, datetime) and item >= threshold]
         self._recent_requests[key] = filtered
         return len(filtered)
+
+    async def can_use_service_quota(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        service_key: str,
+    ) -> dict[str, Any]:
+        user = await self.ensure_user(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+        )
+        limit = service_daily_limit(
+            service_key,
+            plan=str(user.get("current_plan", "free") or "free"),
+        )
+        if limit is None:
+            return {"tracked": False, "allowed": True, "limit": None, "used": 0}
+        if limit <= 0:
+            return {"tracked": True, "allowed": True, "limit": 0, "used": 0}
+        usage = user.get("usage_counters", {})
+        if not isinstance(usage, dict):
+            usage = {}
+        entry = usage.get(resolve_service_key(service_key), {})
+        if not isinstance(entry, dict) or str(entry.get("day", "") or "") != _today_key():
+            used = 0
+        else:
+            used = max(0, int(entry.get("count", 0) or 0))
+        return {
+            "tracked": True,
+            "allowed": used < limit,
+            "limit": limit,
+            "used": used,
+            "remaining": max(0, limit - used),
+        }
+
+    async def consume_service_quota(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        service_key: str,
+    ) -> dict[str, Any]:
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                async with connection.transaction():
+                    row = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                        int(user_id),
+                    )
+                    if row is None:
+                        await self._db_ensure_user(
+                            user_id=user_id,
+                            username=username,
+                            full_name=full_name,
+                        )
+                        row = await connection.fetchrow(
+                            "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                            int(user_id),
+                        )
+                    if row is None:
+                        raise RuntimeError("AI foydalanuvchi topilmadi.")
+                    user = self._normalize_user_locked(
+                        self._serialize_row(row),
+                        username=username,
+                        full_name=full_name,
+                    )
+                    limit = service_daily_limit(
+                        service_key,
+                        plan=str(user.get("current_plan", "free") or "free"),
+                    )
+                    if limit is not None and limit > 0:
+                        entry = self._usage_entry_locked(user, service_key=service_key)
+                        if int(entry.get("count", 0) or 0) >= limit:
+                            return user
+                        entry["count"] = int(entry.get("count", 0) or 0) + 1
+                        entry["last_used_at"] = _iso(_utc_now())
+                        user["last_request_at"] = entry["last_used_at"]
+                        await self._db_write_user_locked(connection, user)
+                    return user
+
+        await self._ensure_loaded()
+        async with self._lock:
+            users = self._data.setdefault("users", {})
+            record = users.setdefault(
+                str(int(user_id)),
+                self._default_user(
+                    user_id=user_id,
+                    username=username,
+                    full_name=full_name,
+                ),
+            )
+            user = self._normalize_user_locked(record, username=username, full_name=full_name)
+            limit = service_daily_limit(
+                service_key,
+                plan=str(user.get("current_plan", "free") or "free"),
+            )
+            if limit is not None and limit > 0:
+                entry = self._usage_entry_locked(user, service_key=service_key)
+                if int(entry.get("count", 0) or 0) < limit:
+                    entry["count"] = int(entry.get("count", 0) or 0) + 1
+                    entry["last_used_at"] = _iso(_utc_now())
+                    user["last_request_at"] = entry["last_used_at"]
+                    await self._save_locked()
+            return json.loads(json.dumps(user))
+
+    async def authorize_ai_service(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        service_key: str,
+        credit_cost: int,
+        estimated_ai_cost_usd: float,
+        cooldown_seconds: int = 0,
+        free_daily_limit: int | None = None,
+        premium_only: bool = False,
+    ) -> dict[str, Any]:
+        if self._pool is not None:
+            return await self._db_authorize_ai_service(
+                user_id=user_id,
+                username=username,
+                full_name=full_name,
+                service_key=service_key,
+                credit_cost=credit_cost,
+                estimated_ai_cost_usd=estimated_ai_cost_usd,
+                cooldown_seconds=cooldown_seconds,
+                free_daily_limit=free_daily_limit,
+                premium_only=premium_only,
+            )
+
+        await self._ensure_loaded()
+        async with self._lock:
+            users = self._data.setdefault("users", {})
+            holds = self._data.setdefault("credit_holds", {})
+            key = str(int(user_id))
+            user = users.get(key)
+            if not isinstance(user, dict):
+                user = self._default_user(
+                    user_id=user_id,
+                    username=username,
+                    full_name=full_name,
+                )
+                users[key] = user
+            user = self._normalize_user_locked(user, username=username, full_name=full_name)
+            now = _utc_now()
+            plan = str(user.get("current_plan", "free") or "free")
+            if premium_only and plan != "premium":
+                return {"ok": False, "reason": "premium_only", "user": json.loads(json.dumps(user))}
+
+            rpm = _plan_rpm(plan)
+            if self._recent_request_count(user_id=user_id) >= rpm:
+                return {"ok": False, "reason": "rpm_limit", "wait_seconds": 60, "user": json.loads(json.dumps(user))}
+
+            usage_entry = self._usage_entry_locked(user, service_key=service_key, now=now)
+            last_used_at = str(usage_entry.get("last_used_at", "") or "")
+            if cooldown_seconds > 0 and last_used_at:
+                elapsed = (now - _parse_dt(last_used_at)).total_seconds()
+                if elapsed < cooldown_seconds:
+                    return {
+                        "ok": False,
+                        "reason": "cooldown",
+                        "wait_seconds": int(cooldown_seconds - elapsed + 0.999),
+                        "user": json.loads(json.dumps(user)),
+                    }
+
+            if plan == "free":
+                if isinstance(free_daily_limit, int) and free_daily_limit > 0:
+                    if int(usage_entry.get("count", 0) or 0) >= free_daily_limit:
+                        return {
+                            "ok": False,
+                            "reason": "daily_limit",
+                            "limit": free_daily_limit,
+                            "used": int(usage_entry.get("count", 0) or 0),
+                            "user": json.loads(json.dumps(user)),
+                        }
+                self._remember_recent_request(user_id=user_id)
+                return {
+                    "ok": True,
+                    "plan": "free",
+                    "hold_id": "",
+                    "credit_cost": 0,
+                    "estimated_ai_cost_usd": 0.0,
+                    "user": json.loads(json.dumps(user)),
+                }
+
+            reserved_credits, reserved_cost = self._active_holds_locked(user_id=user_id, now=now)
+            available_credits = max(0, int(user.get("credit_balance", 0) or 0) - reserved_credits)
+            if available_credits < max(0, int(credit_cost)):
+                return {
+                    "ok": False,
+                    "reason": "insufficient_credits",
+                    "required": max(0, int(credit_cost)),
+                    "available": available_credits,
+                    "user": json.loads(json.dumps(user)),
+                }
+            daily_cap = max(0, int(user.get("daily_credit_cap", 0) or 0))
+            daily_used = max(0, int(user.get("daily_credits_used", 0) or 0))
+            if daily_cap > 0 and daily_used + reserved_credits + int(credit_cost) > daily_cap:
+                return {
+                    "ok": False,
+                    "reason": "daily_credit_cap",
+                    "limit": daily_cap,
+                    "used": daily_used,
+                    "user": json.loads(json.dumps(user)),
+                }
+            budget_cap = float(user.get("ai_budget_cap_usd", premium_safe_ai_budget_usd()) or 0.70)
+            budget_spent = float(user.get("ai_budget_spent_usd", 0.0) or 0.0)
+            if budget_spent + reserved_cost + float(estimated_ai_cost_usd) > budget_cap + 1e-9:
+                return {
+                    "ok": False,
+                    "reason": "budget_cap",
+                    "budget_cap_usd": round(budget_cap, 6),
+                    "budget_spent_usd": round(budget_spent, 6),
+                    "user": json.loads(json.dumps(user)),
+                }
+            hold_id = uuid4().hex
+            holds[hold_id] = {
+                "hold_id": hold_id,
+                "user_id": int(user_id),
+                "service_key": resolve_service_key(service_key),
+                "credits": max(0, int(credit_cost)),
+                "estimated_ai_cost_usd": round(max(0.0, float(estimated_ai_cost_usd)), 6),
+                "status": "held",
+                "created_at": _iso(now),
+                "expires_at": _iso(now + timedelta(seconds=HOLD_TTL_SECONDS)),
+            }
+            self._remember_recent_request(user_id=user_id)
+            await self._save_locked()
+            return {
+                "ok": True,
+                "plan": "premium",
+                "hold_id": hold_id,
+                "credit_cost": max(0, int(credit_cost)),
+                "estimated_ai_cost_usd": round(max(0.0, float(estimated_ai_cost_usd)), 6),
+                "user": json.loads(json.dumps(user)),
+            }
+
+    async def finalize_ai_service(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        service_key: str,
+        ok: bool,
+        hold_id: str = "",
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        actual_ai_cost_usd: float | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        if self._pool is not None:
+            return await self._db_finalize_ai_service(
+                user_id=user_id,
+                username=username,
+                full_name=full_name,
+                service_key=service_key,
+                ok=ok,
+                hold_id=hold_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                actual_ai_cost_usd=actual_ai_cost_usd,
+                note=note,
+            )
+
+        await self._ensure_loaded()
+        async with self._lock:
+            users = self._data.setdefault("users", {})
+            holds = self._data.setdefault("credit_holds", {})
+            record = users.get(str(int(user_id)))
+            if not isinstance(record, dict):
+                raise RuntimeError("AI foydalanuvchi topilmadi.")
+            user = self._normalize_user_locked(record, username=username, full_name=full_name)
+            now = _utc_now()
+
+            if ok:
+                usage_entry = self._usage_entry_locked(user, service_key=service_key, now=now)
+                usage_entry["count"] = int(usage_entry.get("count", 0) or 0) + 1
+                usage_entry["last_used_at"] = _iso(now)
+                user["last_request_at"] = usage_entry["last_used_at"]
+                user["total_prompt_tokens"] = int(user.get("total_prompt_tokens", 0) or 0) + int(prompt_tokens)
+                user["total_completion_tokens"] = int(user.get("total_completion_tokens", 0) or 0) + int(completion_tokens)
+
+                if hold_id:
+                    hold = holds.pop(str(hold_id), None)
+                    if isinstance(hold, dict):
+                        amount = max(0, int(hold.get("credits", 0) or 0))
+                        estimated_cost = round(
+                            max(
+                                0.0,
+                                float(
+                                    actual_ai_cost_usd
+                                    if actual_ai_cost_usd is not None
+                                    else hold.get("estimated_ai_cost_usd", 0.0)
+                                )
+                                or 0.0
+                            ),
+                            6,
+                        )
+                        today_key = _today_key(now)
+                        if str(user.get("daily_credits_used_date", "") or "") != today_key:
+                            user["daily_credits_used"] = 0
+                            user["daily_credits_used_date"] = today_key
+                        user["credit_balance"] = max(0, int(user.get("credit_balance", 0) or 0) - amount)
+                        user["token_balance"] = int(user["credit_balance"])
+                        user["credits_spent"] = int(user.get("credits_spent", 0) or 0) + amount
+                        user["lifetime_tokens_spent"] = int(user.get("credits_spent", 0) or 0)
+                        user["daily_credits_used"] = int(user.get("daily_credits_used", 0) or 0) + amount
+                        user["ai_budget_spent_usd"] = round(
+                            float(user.get("ai_budget_spent_usd", 0.0) or 0.0) + estimated_cost,
+                            6,
+                        )
+                        self._append_transaction_log_locked(
+                            user,
+                            tx_type="debit",
+                            service_key=service_key,
+                            amount=amount,
+                            balance_after=int(user.get("credit_balance", 0) or 0),
+                            estimated_ai_cost_usd=estimated_cost,
+                            note=note,
+                        )
+                user["updated_at"] = _iso(now)
+            else:
+                if hold_id:
+                    holds.pop(str(hold_id), None)
+                user["updated_at"] = _iso(now)
+            await self._save_locked()
+            return json.loads(json.dumps(user))
+
+    async def _db_authorize_ai_service(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        service_key: str,
+        credit_cost: int,
+        estimated_ai_cost_usd: float,
+        cooldown_seconds: int = 0,
+        free_daily_limit: int | None = None,
+        premium_only: bool = False,
+    ) -> dict[str, Any]:
+        if self._pool is None:
+            raise RuntimeError("AI database pool topilmadi.")
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await self._db_ensure_user(
+                    user_id=user_id,
+                    username=username,
+                    full_name=full_name,
+                )
+                row = await connection.fetchrow(
+                    "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                    int(user_id),
+                )
+                if row is None:
+                    raise RuntimeError("AI foydalanuvchi topilmadi.")
+                user = self._normalize_user_locked(
+                    self._serialize_row(row),
+                    username=username,
+                    full_name=full_name,
+                )
+                await self._db_write_user_locked(connection, user)
+                if premium_only and str(user.get("current_plan", "free") or "free") != "premium":
+                    return {"ok": False, "reason": "premium_only", "user": user}
+
+                rpm = _plan_rpm(str(user.get("current_plan", "free") or "free"))
+                if self._recent_request_count(user_id=user_id) >= rpm:
+                    return {"ok": False, "reason": "rpm_limit", "wait_seconds": 60, "user": user}
+
+                usage_entry = self._usage_entry_locked(user, service_key=service_key)
+                last_used_at = str(usage_entry.get("last_used_at", "") or "")
+                now = _utc_now()
+                if cooldown_seconds > 0 and last_used_at:
+                    elapsed = (now - _parse_dt(last_used_at)).total_seconds()
+                    if elapsed < cooldown_seconds:
+                        return {
+                            "ok": False,
+                            "reason": "cooldown",
+                            "wait_seconds": int(cooldown_seconds - elapsed + 0.999),
+                            "user": user,
+                        }
+
+                if str(user.get("current_plan", "free") or "free") == "free":
+                    if isinstance(free_daily_limit, int) and free_daily_limit > 0:
+                        if int(usage_entry.get("count", 0) or 0) >= free_daily_limit:
+                            return {
+                                "ok": False,
+                                "reason": "daily_limit",
+                                "limit": free_daily_limit,
+                                "used": int(usage_entry.get("count", 0) or 0),
+                                "user": user,
+                            }
+                    self._remember_recent_request(user_id=user_id)
+                    return {
+                        "ok": True,
+                        "plan": "free",
+                        "hold_id": "",
+                        "credit_cost": 0,
+                        "estimated_ai_cost_usd": 0.0,
+                        "user": user,
+                    }
+
+                await connection.execute(
+                    """
+                    DELETE FROM credit_holds
+                    WHERE user_id = $1 AND status = 'held' AND expires_at <= NOW()
+                    """,
+                    int(user_id),
+                )
+                reserved = await connection.fetchrow(
+                    """
+                    SELECT COALESCE(SUM(credits), 0) AS reserved_credits,
+                           COALESCE(SUM(estimated_ai_cost_usd), 0) AS reserved_cost
+                    FROM credit_holds
+                    WHERE user_id = $1 AND status = 'held'
+                    """,
+                    int(user_id),
+                )
+                reserved_credits = int(reserved["reserved_credits"] or 0) if reserved is not None else 0
+                reserved_cost = float(reserved["reserved_cost"] or 0.0) if reserved is not None else 0.0
+                available_credits = max(0, int(user.get("credit_balance", 0) or 0) - reserved_credits)
+                if available_credits < max(0, int(credit_cost)):
+                    return {
+                        "ok": False,
+                        "reason": "insufficient_credits",
+                        "required": max(0, int(credit_cost)),
+                        "available": available_credits,
+                        "user": user,
+                    }
+                daily_cap = max(0, int(user.get("daily_credit_cap", 0) or 0))
+                daily_used = max(0, int(user.get("daily_credits_used", 0) or 0))
+                if daily_cap > 0 and daily_used + reserved_credits + int(credit_cost) > daily_cap:
+                    return {
+                        "ok": False,
+                        "reason": "daily_credit_cap",
+                        "limit": daily_cap,
+                        "used": daily_used,
+                        "user": user,
+                    }
+                budget_cap = float(user.get("ai_budget_cap_usd", premium_safe_ai_budget_usd()) or 0.70)
+                budget_spent = float(user.get("ai_budget_spent_usd", 0.0) or 0.0)
+                if budget_spent + reserved_cost + float(estimated_ai_cost_usd) > budget_cap + 1e-9:
+                    return {
+                        "ok": False,
+                        "reason": "budget_cap",
+                        "budget_cap_usd": round(budget_cap, 6),
+                        "budget_spent_usd": round(budget_spent, 6),
+                        "user": user,
+                    }
+                hold_id = uuid4().hex
+                await connection.execute(
+                    """
+                    INSERT INTO credit_holds (
+                        hold_id,
+                        user_id,
+                        service_key,
+                        credits,
+                        estimated_ai_cost_usd,
+                        status,
+                        created_at,
+                        expires_at,
+                        metadata
+                    )
+                    VALUES ($1, $2, $3, $4, $5, 'held', NOW(), $6, '{}'::jsonb)
+                    """,
+                    hold_id,
+                    int(user_id),
+                    resolve_service_key(service_key),
+                    max(0, int(credit_cost)),
+                    round(max(0.0, float(estimated_ai_cost_usd)), 6),
+                    _utc_now() + timedelta(seconds=HOLD_TTL_SECONDS),
+                )
+                self._remember_recent_request(user_id=user_id)
+                return {
+                    "ok": True,
+                    "plan": "premium",
+                    "hold_id": hold_id,
+                    "credit_cost": max(0, int(credit_cost)),
+                    "estimated_ai_cost_usd": round(max(0.0, float(estimated_ai_cost_usd)), 6),
+                    "user": user,
+                }
+
+    async def _db_finalize_ai_service(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        full_name: str,
+        service_key: str,
+        ok: bool,
+        hold_id: str = "",
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        actual_ai_cost_usd: float | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        if self._pool is None:
+            raise RuntimeError("AI database pool topilmadi.")
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                    int(user_id),
+                )
+                if row is None:
+                    raise RuntimeError("AI foydalanuvchi topilmadi.")
+                user = self._normalize_user_locked(
+                    self._serialize_row(row),
+                    username=username,
+                    full_name=full_name,
+                )
+                now = _utc_now()
+                if ok:
+                    usage_entry = self._usage_entry_locked(user, service_key=service_key, now=now)
+                    usage_entry["count"] = int(usage_entry.get("count", 0) or 0) + 1
+                    usage_entry["last_used_at"] = _iso(now)
+                    user["last_request_at"] = usage_entry["last_used_at"]
+                    user["total_prompt_tokens"] = int(user.get("total_prompt_tokens", 0) or 0) + int(prompt_tokens)
+                    user["total_completion_tokens"] = int(user.get("total_completion_tokens", 0) or 0) + int(completion_tokens)
+                hold = None
+                if hold_id:
+                    hold = await connection.fetchrow(
+                        "SELECT * FROM credit_holds WHERE hold_id = $1 FOR UPDATE",
+                        str(hold_id),
+                    )
+                    if hold is not None:
+                        await connection.execute(
+                            "DELETE FROM credit_holds WHERE hold_id = $1",
+                            str(hold_id),
+                        )
+                if ok and hold is not None:
+                    amount = max(0, int(hold["credits"] or 0))
+                    estimated_cost = round(
+                        max(
+                            0.0,
+                            float(
+                                actual_ai_cost_usd
+                                if actual_ai_cost_usd is not None
+                                else hold["estimated_ai_cost_usd"]
+                            )
+                            or 0.0
+                        ),
+                        6,
+                    )
+                    today_key = _today_key(now)
+                    if str(user.get("daily_credits_used_date", "") or "") != today_key:
+                        user["daily_credits_used"] = 0
+                        user["daily_credits_used_date"] = today_key
+                    user["credit_balance"] = max(0, int(user.get("credit_balance", 0) or 0) - amount)
+                    user["token_balance"] = int(user["credit_balance"])
+                    user["credits_spent"] = int(user.get("credits_spent", 0) or 0) + amount
+                    user["lifetime_tokens_spent"] = int(user.get("credits_spent", 0) or 0)
+                    user["daily_credits_used"] = int(user.get("daily_credits_used", 0) or 0) + amount
+                    user["ai_budget_spent_usd"] = round(
+                        float(user.get("ai_budget_spent_usd", 0.0) or 0.0) + estimated_cost,
+                        6,
+                    )
+                    self._append_transaction_log_locked(
+                        user,
+                        tx_type="debit",
+                        service_key=service_key,
+                        amount=amount,
+                        balance_after=int(user.get("credit_balance", 0) or 0),
+                        estimated_ai_cost_usd=estimated_cost,
+                        note=note,
+                    )
+                user["updated_at"] = _iso(now)
+                await self._db_write_user_locked(connection, user)
+                return user
 
     async def check_request_limits(
         self,
@@ -864,48 +1804,59 @@ class AIStore:
             full_name=full_name,
         )
         now = _utc_now()
-        balance = max(0, int(user.get("token_balance", 0) or 0))
-        bonus_tokens = (
-            int(credits)
-            if isinstance(credits, int) and credits > 0
-            else (premium_upgrade_tokens() if normalized_plan == "premium" else 0)
-        )
-        target_balance = balance + max(0, bonus_tokens)
-        if normalized_plan == "free" and isinstance(credits, int) and credits >= 0:
-            target_balance = int(credits)
+        current_balance = max(0, int(user.get("credit_balance", 0) or 0))
         target_reset = _next_token_refill(now)
+        target_monthly_credits = premium_monthly_credits() if normalized_plan == "premium" else 0
+        target_balance = (
+            int(credits)
+            if isinstance(credits, int) and credits >= 0
+            else (target_monthly_credits if normalized_plan == "premium" else current_balance)
+        )
+        premium_started_at = _iso(now) if normalized_plan == "premium" else str(user.get("premium_started_at", "") or "")
+        last_credit_reset = _iso(now) if normalized_plan == "premium" else str(user.get("last_credit_reset", "") or "")
+        next_credit_reset_at = _iso(_add_months(now, 1)) if normalized_plan == "premium" else ""
+        credits_added_delta = max(0, target_balance if normalized_plan == "premium" else 0)
 
         if self._pool is not None:
             async with self._pool.acquire() as connection:
-                await connection.execute(
-                    """
-                    UPDATE ai_users
-                    SET current_plan = $2,
-                        selected_plan = 'auto',
-                        selected_model = 'auto',
-                        token_balance = $3,
-                        free_requests_used = 0,
-                        free_reset_date = $4,
-                        reset_date = $4,
-                        free_media_trial_used = FALSE,
-                        free_media_trial_cycle_end = $4,
-                        lifetime_tokens_earned = lifetime_tokens_earned + $5,
-                        updated_at = NOW()
-                    WHERE user_id = $1
-                    """,
-                    int(user_id),
-                    normalized_plan,
-                    int(target_balance),
-                    target_reset,
-                    max(0, bonus_tokens),
-                )
-                row = await connection.fetchrow(
-                    "SELECT * FROM ai_users WHERE user_id = $1",
-                    int(user_id),
-                )
-            if row is None:
-                raise RuntimeError("AI foydalanuvchi plani yangilanmadi.")
-            return self._serialize_row(row)
+                async with connection.transaction():
+                    row = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                        int(user_id),
+                    )
+                    if row is None:
+                        raise RuntimeError("AI foydalanuvchi plani yangilanmadi.")
+                    updated = self._normalize_user_locked(
+                        self._serialize_row(row),
+                        username=username,
+                        full_name=full_name,
+                    )
+                    updated["current_plan"] = normalized_plan
+                    updated["selected_plan"] = MODEL_ALIAS_AUTO
+                    updated["selected_model"] = MODEL_ALIAS_AUTO
+                    updated["credit_balance"] = int(target_balance)
+                    updated["token_balance"] = int(target_balance)
+                    updated["monthly_credits"] = int(target_monthly_credits)
+                    updated["free_requests_used"] = 0
+                    updated["free_reset_date"] = _iso(target_reset)
+                    updated["reset_date"] = next_credit_reset_at or _iso(target_reset)
+                    updated["free_media_trial_used"] = False
+                    updated["free_media_trial_cycle_end"] = updated["free_reset_date"]
+                    updated["daily_credit_cap"] = premium_daily_credit_cap()
+                    updated["daily_credits_used"] = 0
+                    updated["daily_credits_used_date"] = _today_key(now)
+                    updated["ai_budget_cap_usd"] = premium_safe_ai_budget_usd()
+                    updated["ai_budget_spent_usd"] = 0.0 if normalized_plan == "premium" else float(
+                        updated.get("ai_budget_spent_usd", 0.0) or 0.0
+                    )
+                    updated["premium_started_at"] = premium_started_at
+                    updated["last_credit_reset"] = last_credit_reset
+                    updated["next_credit_reset_at"] = next_credit_reset_at
+                    updated["credits_added"] = int(updated.get("credits_added", 0) or 0) + credits_added_delta
+                    updated["lifetime_tokens_earned"] = int(updated.get("credits_added", 0) or 0)
+                    updated["updated_at"] = _iso(now)
+                    await self._db_write_user_locked(connection, updated)
+                    return updated
 
         await self._ensure_loaded()
         async with self._lock:
@@ -921,15 +1872,25 @@ class AIStore:
             record["current_plan"] = normalized_plan
             record["selected_plan"] = MODEL_ALIAS_AUTO
             record["selected_model"] = MODEL_ALIAS_AUTO
+            record["credit_balance"] = int(target_balance)
             record["token_balance"] = int(target_balance)
+            record["monthly_credits"] = int(target_monthly_credits)
             record["free_requests_used"] = 0
             record["free_reset_date"] = _iso(target_reset)
-            record["reset_date"] = _iso(target_reset)
+            record["reset_date"] = next_credit_reset_at or _iso(target_reset)
             record["free_media_trial_used"] = False
             record["free_media_trial_cycle_end"] = record["free_reset_date"]
-            record["lifetime_tokens_earned"] = int(
-                record.get("lifetime_tokens_earned", 0) or 0
-            ) + max(0, bonus_tokens)
+            record["daily_credit_cap"] = premium_daily_credit_cap()
+            record["daily_credits_used"] = 0
+            record["daily_credits_used_date"] = _today_key(now)
+            record["ai_budget_cap_usd"] = premium_safe_ai_budget_usd()
+            if normalized_plan == "premium":
+                record["ai_budget_spent_usd"] = 0.0
+            record["premium_started_at"] = premium_started_at
+            record["last_credit_reset"] = last_credit_reset
+            record["next_credit_reset_at"] = next_credit_reset_at
+            record["credits_added"] = int(record.get("credits_added", 0) or 0) + credits_added_delta
+            record["lifetime_tokens_earned"] = int(record.get("credits_added", 0) or 0)
             record["updated_at"] = _iso(now)
             await self._save_locked()
             return json.loads(json.dumps(record))
@@ -944,23 +1905,23 @@ class AIStore:
             raise ValueError("Kredit manfiy bo'lishi mumkin emas.")
         if self._pool is not None:
             async with self._pool.acquire() as connection:
-                await connection.execute(
-                    """
-                    UPDATE ai_users
-                    SET token_balance = $2,
-                        updated_at = NOW()
-                    WHERE user_id = $1
-                    """,
-                    int(user_id),
-                    int(credits),
-                )
-                row = await connection.fetchrow(
-                    "SELECT * FROM ai_users WHERE user_id = $1",
-                    int(user_id),
-                )
-            if row is None:
-                raise RuntimeError("AI foydalanuvchi topilmadi.")
-            return self._serialize_row(row)
+                async with connection.transaction():
+                    row = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                        int(user_id),
+                    )
+                    if row is None:
+                        raise RuntimeError("AI foydalanuvchi topilmadi.")
+                    updated = self._normalize_user_locked(
+                        self._serialize_row(row),
+                        username="",
+                        full_name="",
+                    )
+                    updated["credit_balance"] = int(credits)
+                    updated["token_balance"] = int(credits)
+                    updated["updated_at"] = _iso(_utc_now())
+                    await self._db_write_user_locked(connection, updated)
+                    return updated
 
         await self._ensure_loaded()
         async with self._lock:
@@ -968,6 +1929,7 @@ class AIStore:
             record = users.get(str(int(user_id)))
             if not isinstance(record, dict):
                 raise RuntimeError("AI foydalanuvchi topilmadi.")
+            record["credit_balance"] = int(credits)
             record["token_balance"] = int(credits)
             record["updated_at"] = _iso(_utc_now())
             await self._save_locked()
@@ -1173,6 +2135,8 @@ class AIStore:
         username: str,
         full_name: str,
         amount: int,
+        service_key: str = "",
+        note: str = "",
     ) -> dict[str, Any]:
         token_amount = max(0, int(amount))
         user = await self.ensure_user(
@@ -1192,28 +2156,29 @@ class AIStore:
                     )
                     if row is None:
                         raise RuntimeError("AI foydalanuvchi topilmadi.")
-                    balance = int(row["token_balance"] or 0)
+                    user = self._normalize_user_locked(
+                        self._serialize_row(row),
+                        username=username,
+                        full_name=full_name,
+                    )
+                    balance = int(user.get("credit_balance", 0) or 0)
                     charged_amount = min(balance, token_amount)
                     if charged_amount <= 0:
-                        return self._serialize_row(row)
-                    await connection.execute(
-                        """
-                        UPDATE ai_users
-                        SET token_balance = token_balance - $2,
-                            lifetime_tokens_spent = lifetime_tokens_spent + $2,
-                            updated_at = NOW()
-                        WHERE user_id = $1
-                        """,
-                        int(user_id),
-                        charged_amount,
+                        return user
+                    user["credit_balance"] = balance - charged_amount
+                    user["token_balance"] = int(user["credit_balance"])
+                    user["credits_spent"] = int(user.get("credits_spent", 0) or 0) + charged_amount
+                    user["lifetime_tokens_spent"] = int(user.get("credits_spent", 0) or 0)
+                    self._append_transaction_log_locked(
+                        user,
+                        tx_type="debit",
+                        service_key=service_key,
+                        amount=charged_amount,
+                        balance_after=int(user["credit_balance"]),
+                        note=note,
                     )
-                    updated = await connection.fetchrow(
-                        "SELECT * FROM ai_users WHERE user_id = $1",
-                        int(user_id),
-                    )
-                if updated is None:
-                    raise RuntimeError("AI foydalanuvchi topilmadi.")
-                return self._serialize_row(updated)
+                    await self._db_write_user_locked(connection, user)
+                return user
 
         await self._ensure_loaded()
         async with self._lock:
@@ -1222,13 +2187,21 @@ class AIStore:
             if not isinstance(record, dict):
                 raise RuntimeError("AI foydalanuvchi topilmadi.")
             self._normalize_user_locked(record, username=username, full_name=full_name)
-            charged_amount = min(int(record.get("token_balance", 0) or 0), token_amount)
+            charged_amount = min(int(record.get("credit_balance", 0) or 0), token_amount)
             if charged_amount <= 0:
                 return json.loads(json.dumps(record))
-            record["token_balance"] = int(record.get("token_balance", 0) or 0) - charged_amount
-            record["lifetime_tokens_spent"] = int(
-                record.get("lifetime_tokens_spent", 0) or 0
-            ) + charged_amount
+            record["credit_balance"] = int(record.get("credit_balance", 0) or 0) - charged_amount
+            record["token_balance"] = int(record["credit_balance"])
+            record["credits_spent"] = int(record.get("credits_spent", 0) or 0) + charged_amount
+            record["lifetime_tokens_spent"] = int(record.get("credits_spent", 0) or 0)
+            self._append_transaction_log_locked(
+                record,
+                tx_type="debit",
+                service_key=service_key,
+                amount=charged_amount,
+                balance_after=int(record["credit_balance"]),
+                note=note,
+            )
             record["updated_at"] = _iso(_utc_now())
             await self._save_locked()
             return json.loads(json.dumps(record))
@@ -1240,6 +2213,8 @@ class AIStore:
         username: str,
         full_name: str,
         amount: int,
+        service_key: str = "",
+        note: str = "",
     ) -> dict[str, Any]:
         token_amount = max(0, int(amount))
         user = await self.ensure_user(
@@ -1252,24 +2227,32 @@ class AIStore:
 
         if self._pool is not None:
             async with self._pool.acquire() as connection:
-                await connection.execute(
-                    """
-                    UPDATE ai_users
-                    SET token_balance = token_balance + $2,
-                        lifetime_tokens_earned = lifetime_tokens_earned + $2,
-                        updated_at = NOW()
-                    WHERE user_id = $1
-                    """,
-                    int(user_id),
-                    token_amount,
-                )
-                row = await connection.fetchrow(
-                    "SELECT * FROM ai_users WHERE user_id = $1",
-                    int(user_id),
-                )
-            if row is None:
-                raise RuntimeError("AI foydalanuvchi topilmadi.")
-            return self._serialize_row(row)
+                async with connection.transaction():
+                    row = await connection.fetchrow(
+                        "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
+                        int(user_id),
+                    )
+                    if row is None:
+                        raise RuntimeError("AI foydalanuvchi topilmadi.")
+                    user = self._normalize_user_locked(
+                        self._serialize_row(row),
+                        username=username,
+                        full_name=full_name,
+                    )
+                    user["credit_balance"] = int(user.get("credit_balance", 0) or 0) + token_amount
+                    user["token_balance"] = int(user["credit_balance"])
+                    user["credits_added"] = int(user.get("credits_added", 0) or 0) + token_amount
+                    user["lifetime_tokens_earned"] = int(user.get("credits_added", 0) or 0)
+                    self._append_transaction_log_locked(
+                        user,
+                        tx_type="credit",
+                        service_key=service_key,
+                        amount=token_amount,
+                        balance_after=int(user["credit_balance"]),
+                        note=note,
+                    )
+                    await self._db_write_user_locked(connection, user)
+                return user
 
         await self._ensure_loaded()
         async with self._lock:
@@ -1278,10 +2261,18 @@ class AIStore:
             if not isinstance(record, dict):
                 raise RuntimeError("AI foydalanuvchi topilmadi.")
             self._normalize_user_locked(record, username=username, full_name=full_name)
-            record["token_balance"] = int(record.get("token_balance", 0) or 0) + token_amount
-            record["lifetime_tokens_earned"] = int(
-                record.get("lifetime_tokens_earned", 0) or 0
-            ) + token_amount
+            record["credit_balance"] = int(record.get("credit_balance", 0) or 0) + token_amount
+            record["token_balance"] = int(record["credit_balance"])
+            record["credits_added"] = int(record.get("credits_added", 0) or 0) + token_amount
+            record["lifetime_tokens_earned"] = int(record.get("credits_added", 0) or 0)
+            self._append_transaction_log_locked(
+                record,
+                tx_type="credit",
+                service_key=service_key,
+                amount=token_amount,
+                balance_after=int(record["credit_balance"]),
+                note=note,
+            )
             record["updated_at"] = _iso(_utc_now())
             await self._save_locked()
             return json.loads(json.dumps(record))
@@ -1334,7 +2325,9 @@ class AIStore:
                         UPDATE ai_users
                         SET referrer_id = $2,
                             referral_bonus_claimed = TRUE,
+                            credit_balance = credit_balance + $3,
                             token_balance = token_balance + $3,
+                            credits_added = credits_added + $3,
                             lifetime_tokens_earned = lifetime_tokens_earned + $3,
                             updated_at = NOW()
                         WHERE user_id = $1
@@ -1347,7 +2340,9 @@ class AIStore:
                         """
                         UPDATE ai_users
                         SET referral_count = referral_count + 1,
+                            credit_balance = credit_balance + $2,
                             token_balance = token_balance + $2,
+                            credits_added = credits_added + $2,
                             lifetime_tokens_earned = lifetime_tokens_earned + $2,
                             updated_at = NOW()
                         WHERE user_id = $1
@@ -1381,17 +2376,17 @@ class AIStore:
 
             referred["referrer_id"] = int(referrer_id)
             referred["referral_bonus_claimed"] = True
-            referred["token_balance"] = int(referred.get("token_balance", 0) or 0) + invitee_bonus
-            referred["lifetime_tokens_earned"] = int(
-                referred.get("lifetime_tokens_earned", 0) or 0
-            ) + invitee_bonus
+            referred["credit_balance"] = int(referred.get("credit_balance", 0) or 0) + invitee_bonus
+            referred["token_balance"] = int(referred["credit_balance"])
+            referred["credits_added"] = int(referred.get("credits_added", 0) or 0) + invitee_bonus
+            referred["lifetime_tokens_earned"] = int(referred.get("credits_added", 0) or 0)
             referred["updated_at"] = _iso(_utc_now())
 
             referrer["referral_count"] = int(referrer.get("referral_count", 0) or 0) + 1
-            referrer["token_balance"] = int(referrer.get("token_balance", 0) or 0) + inviter_bonus
-            referrer["lifetime_tokens_earned"] = int(
-                referrer.get("lifetime_tokens_earned", 0) or 0
-            ) + inviter_bonus
+            referrer["credit_balance"] = int(referrer.get("credit_balance", 0) or 0) + inviter_bonus
+            referrer["token_balance"] = int(referrer["credit_balance"])
+            referrer["credits_added"] = int(referrer.get("credits_added", 0) or 0) + inviter_bonus
+            referrer["lifetime_tokens_earned"] = int(referrer.get("credits_added", 0) or 0)
             referrer["updated_at"] = _iso(_utc_now())
             await self._save_locked()
             return {
@@ -1700,27 +2695,41 @@ class AIStore:
                     awarded_tokens = 0
                     if approve:
                         awarded_tokens = premium_upgrade_tokens()
-                        next_refill = _next_token_refill()
-                        await connection.execute(
-                            """
-                            UPDATE ai_users
-                            SET current_plan = 'premium',
-                                selected_plan = 'auto',
-                                selected_model = 'auto',
-                                token_balance = token_balance + $2,
-                                free_requests_used = 0,
-                                free_reset_date = $3,
-                                reset_date = $3,
-                                free_media_trial_used = FALSE,
-                                free_media_trial_cycle_end = $3,
-                                lifetime_tokens_earned = lifetime_tokens_earned + $2,
-                                updated_at = NOW()
-                            WHERE user_id = $1
-                            """,
+                        user_row = await connection.fetchrow(
+                            "SELECT * FROM ai_users WHERE user_id = $1 FOR UPDATE",
                             int(request_row["user_id"]),
-                            int(awarded_tokens),
-                            next_refill,
                         )
+                        if user_row is None:
+                            return {"ok": False, "reason": "missing"}
+                        user = self._normalize_user_locked(
+                            self._serialize_row(user_row),
+                            username=str(request_row["username"] or ""),
+                            full_name=str(request_row["full_name"] or ""),
+                        )
+                        now = _utc_now()
+                        user["current_plan"] = "premium"
+                        user["selected_plan"] = MODEL_ALIAS_AUTO
+                        user["selected_model"] = MODEL_ALIAS_AUTO
+                        user["credit_balance"] = int(awarded_tokens)
+                        user["token_balance"] = int(awarded_tokens)
+                        user["monthly_credits"] = premium_monthly_credits()
+                        user["free_requests_used"] = 0
+                        user["free_reset_date"] = _iso(_next_token_refill(now))
+                        user["reset_date"] = _iso(_add_months(now, 1))
+                        user["free_media_trial_used"] = False
+                        user["free_media_trial_cycle_end"] = user["free_reset_date"]
+                        user["premium_started_at"] = _iso(now)
+                        user["last_credit_reset"] = _iso(now)
+                        user["next_credit_reset_at"] = _iso(_add_months(now, 1))
+                        user["daily_credit_cap"] = premium_daily_credit_cap()
+                        user["daily_credits_used"] = 0
+                        user["daily_credits_used_date"] = _today_key(now)
+                        user["ai_budget_cap_usd"] = premium_safe_ai_budget_usd()
+                        user["ai_budget_spent_usd"] = 0.0
+                        user["credits_added"] = int(user.get("credits_added", 0) or 0) + int(awarded_tokens)
+                        user["lifetime_tokens_earned"] = int(user.get("credits_added", 0) or 0)
+                        user["updated_at"] = _iso(now)
+                        await self._db_write_user_locked(connection, user)
                     request_row = await connection.fetchrow(
                         "SELECT * FROM premium_requests WHERE request_id = $1",
                         int(request_id),
@@ -1763,19 +2772,27 @@ class AIStore:
             record["reviewer_note"] = note
             self._normalize_user_locked(user, username="", full_name="")
             if approve:
-                next_refill = _next_token_refill(now)
                 user["current_plan"] = "premium"
                 user["selected_plan"] = MODEL_ALIAS_AUTO
                 user["selected_model"] = MODEL_ALIAS_AUTO
-                user["token_balance"] = int(user.get("token_balance", 0) or 0) + awarded_tokens
+                user["credit_balance"] = int(awarded_tokens)
+                user["token_balance"] = int(awarded_tokens)
+                user["monthly_credits"] = premium_monthly_credits()
                 user["free_requests_used"] = 0
-                user["free_reset_date"] = _iso(next_refill)
-                user["reset_date"] = _iso(next_refill)
+                user["free_reset_date"] = _iso(_next_token_refill(now))
+                user["reset_date"] = _iso(_add_months(now, 1))
                 user["free_media_trial_used"] = False
-                user["free_media_trial_cycle_end"] = _iso(next_refill)
-                user["lifetime_tokens_earned"] = int(
-                    user.get("lifetime_tokens_earned", 0) or 0
-                ) + awarded_tokens
+                user["free_media_trial_cycle_end"] = user["free_reset_date"]
+                user["premium_started_at"] = _iso(now)
+                user["last_credit_reset"] = _iso(now)
+                user["next_credit_reset_at"] = _iso(_add_months(now, 1))
+                user["daily_credit_cap"] = premium_daily_credit_cap()
+                user["daily_credits_used"] = 0
+                user["daily_credits_used_date"] = _today_key(now)
+                user["ai_budget_cap_usd"] = premium_safe_ai_budget_usd()
+                user["ai_budget_spent_usd"] = 0.0
+                user["credits_added"] = int(user.get("credits_added", 0) or 0) + awarded_tokens
+                user["lifetime_tokens_earned"] = int(user.get("credits_added", 0) or 0)
                 user["updated_at"] = _iso(now)
             await self._save_locked()
             return {

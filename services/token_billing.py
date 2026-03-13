@@ -9,10 +9,11 @@ from services.ai_store import AIStore
 from services.group_command_mode import is_group_chat
 from services.token_pricing import (
     ServiceTariff,
-    premium_daily_tokens,
+    premium_monthly_credits,
     premium_upgrade_tokens,
     resolve_service_key,
     service_cost,
+    service_daily_limit,
     service_tariff,
 )
 from ui.premium import upgrade_prompt_keyboard
@@ -77,13 +78,20 @@ async def preview_charge(
 
 def insufficient_balance_text(*, label: str, required: int, balance: int) -> str:
     return (
-        "<b>Token yetarli emas</b>\n"
+        "<b>Kredit yetarli emas</b>\n"
         f"Xizmat: <b>{html.escape(label)}</b>\n"
-        f"Kerak: <b>{int(required)}</b> token\n"
-        f"Balans: <b>{int(balance)}</b> token\n\n"
+        f"Kerak: <b>{int(required)}</b> kredit\n"
+        f"Balans: <b>{int(balance)}</b> kredit\n\n"
         "Premium bilan balansni tezroq oshiring:\n"
-        f"- faollashganda {premium_upgrade_tokens()} token\n"
-        f"- har 24 soatda {premium_daily_tokens()} token refill"
+        f"- har oy {premium_monthly_credits()} kredit"
+    )
+
+
+def quota_limit_text(*, label: str, limit: int) -> str:
+    return (
+        "<b>Kunlik limit tugadi</b>\n"
+        f"Xizmat: <b>{html.escape(label)}</b>\n"
+        f"Bugungi limit: <b>{int(limit)}</b> ta"
     )
 
 
@@ -101,6 +109,34 @@ async def ensure_balance(
         service_key,
         custom_cost=custom_cost,
     )
+    quota = await ai_store.can_use_service_quota(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        service_key=service_key,
+    )
+    if bool(quota.get("tracked")):
+        if not bool(quota.get("allowed")):
+            text = quota_limit_text(
+                label=tariff.label,
+                limit=int(quota.get("limit", 0) or 0),
+            )
+            if isinstance(event, CallbackQuery):
+                await event.answer("Kunlik limit tugadi.", show_alert=True)
+                if event.message is not None:
+                    await event.message.answer(
+                        text,
+                        parse_mode="HTML",
+                        reply_markup=reply_markup,
+                    )
+            else:
+                await event.answer(
+                    text,
+                    parse_mode="HTML",
+                    reply_markup=reply_markup,
+                )
+            return None
+        cost = 0
     balance = int(user.get("token_balance", 0) or 0)
     if balance >= cost:
         return user, cost, user_id, username, full_name
@@ -118,14 +154,13 @@ async def ensure_balance(
         if private_upgrade_prompt:
             await event.answer(
                 (
-                    "Token yetarli emas.\n"
-                    f"Premium bilan {premium_upgrade_tokens()} token va "
-                    f"har 24 soatda {premium_daily_tokens()} token oling."
+                    "Kredit yetarli emas.\n"
+                    f"Premium bilan har oy {premium_monthly_credits()} kredit oling."
                 ),
                 show_alert=True,
             )
         else:
-            await event.answer(f"{tariff.label}: {cost} token kerak", show_alert=True)
+            await event.answer(f"{tariff.label}: {cost} kredit kerak", show_alert=True)
         if event.message is not None:
             await event.message.answer(
                 text,
@@ -157,6 +192,27 @@ async def finalize_charge(
             username=username,
             full_name=full_name,
             amount=token_amount,
+            service_key=service_key,
+        )
+    quota_limit = service_daily_limit(
+        service_key,
+        plan=str(
+            (
+                await ai_store.ensure_user(
+                    user_id=user_id,
+                    username=username,
+                    full_name=full_name,
+                )
+            ).get("current_plan", "free")
+            or "free"
+        ),
+    )
+    if quota_limit is not None:
+        return await ai_store.consume_service_quota(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            service_key=service_key,
         )
     if is_complimentary_service(service_key):
         return await ai_store.consume_complimentary_service(

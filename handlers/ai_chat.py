@@ -20,19 +20,23 @@ from aiogram.utils.chat_action import ChatActionSender
 
 from handlers.admin import is_admin_user_id
 from services.ai_channel_logger import log_ai_exchange, remember_channel
+from services.ai_costs import estimate_grok_chat_cost_usd
 from services.ai_gateway import (
     MODEL_ALIAS_AUTO,
     allowed_model_aliases_for_plan,
     effective_selected_plan,
-    estimate_credits,
     generate_ai_reply,
     model_label,
     model_options_for_plan,
-    projected_credits,
+    projected_ai_cost_usd,
 )
 from services.ai_store import AIStore
 from services.group_command_mode import is_group_chat
-from services.token_billing import ensure_balance
+from services.token_pricing import (
+    free_ai_chat_cooldown_seconds,
+    free_ai_chat_limit_per_day,
+    premium_ai_chat_credit_cost,
+)
 from ui.premium import upgrade_prompt_keyboard
 
 router = Router(name="ai_chat")
@@ -51,31 +55,29 @@ def _user_identity(message_or_callback: Message | CallbackQuery) -> tuple[int, s
     full_name = " ".join(
         part
         for part in [
-            str(from_user.first_name or "").strip(),
-            str(from_user.last_name or "").strip(),
+            str(getattr(from_user, "first_name", "") or "").strip(),
+            str(getattr(from_user, "last_name", "") or "").strip(),
         ]
         if part
     ).strip()
-    return int(from_user.id), str(from_user.username or "").strip(), full_name
+    return int(from_user.id), str(getattr(from_user, "username", "") or "").strip(), full_name
 
 
 def _selected_model_label(user: dict[str, object]) -> str:
-    return model_label(
-        str(user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO)
-    )
+    return model_label(str(user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO))
 
 
 def _friendly_ai_error(error: Exception) -> str:
     raw = str(error or "").strip().lower()
-    if "401" in raw or "user not found" in raw or "provider kaliti" in raw:
-        return "🔐 AI hozir sozlanmagan. Admin API kalitini yangilashi kerak."
+    if "401" in raw or "provider kaliti" in raw:
+        return "AI hozir sozlanmagan. Admin API kalitini yangilashi kerak."
     if "429" in raw or "rate limit" in raw:
-        return "⏳ AI limitga yetdi. Birozdan keyin qayta urinib koring."
+        return "AI limitga yetdi. Birozdan keyin qayta urinib koring."
     if "timeout" in raw or "timed out" in raw:
-        return "⌛ AI javobi kechikdi. Qisqaroq sorov bilan qayta urinib koring."
-    if "500" in raw or "502" in raw or "503" in raw or "504" in raw:
-        return "🛠️ AI server vaqtincha javob bermayapti. Keyinroq urinib koring."
-    return "⚠️ Sorov hozir bajarilmadi. Keyinroq qayta urinib koring."
+        return "AI javobi kechikdi. Qisqaroq sorov bilan qayta urinib koring."
+    if any(code in raw for code in ("500", "502", "503", "504")):
+        return "AI server vaqtincha javob bermayapti. Keyinroq urinib koring."
+    return "Sorov hozir bajarilmadi. Keyinroq qayta urinib koring."
 
 
 async def _safe_edit_or_answer(
@@ -113,11 +115,11 @@ def ai_dashboard_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✨ Yangi chat", callback_data="ai:dashboard"),
-                InlineKeyboardButton(text="🧠 Model", callback_data="ai:model_menu"),
+                InlineKeyboardButton(text="Yangi chat", callback_data="ai:dashboard"),
+                InlineKeyboardButton(text="Model", callback_data="ai:model_menu"),
             ],
-            [InlineKeyboardButton(text="🧹 Kontekstni tozalash", callback_data="ai:clear")],
-            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="services:back")],
+            [InlineKeyboardButton(text="Kontekstni tozalash", callback_data="ai:clear")],
+            [InlineKeyboardButton(text="Orqaga", callback_data="services:back")],
         ]
     )
 
@@ -126,11 +128,11 @@ def ai_reply_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="💬 Yana yozish", callback_data="ai:dashboard"),
-                InlineKeyboardButton(text="🧠 Model", callback_data="ai:model_menu"),
+                InlineKeyboardButton(text="Yana yozish", callback_data="ai:dashboard"),
+                InlineKeyboardButton(text="Model", callback_data="ai:model_menu"),
             ],
-            [InlineKeyboardButton(text="🧹 Tozalash", callback_data="ai:clear")],
-            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="services:back")],
+            [InlineKeyboardButton(text="Tozalash", callback_data="ai:clear")],
+            [InlineKeyboardButton(text="Orqaga", callback_data="services:back")],
         ]
     )
 
@@ -143,7 +145,7 @@ def _model_menu_keyboard(user: dict[str, object]) -> InlineKeyboardMarkup:
     for index in range(0, len(options), 2):
         row: list[InlineKeyboardButton] = []
         for alias, label in options[index : index + 2]:
-            prefix = "✅" if selected_model == alias else "🧠"
+            prefix = "[X]" if selected_model == alias else "[ ]"
             row.append(
                 InlineKeyboardButton(
                     text=f"{prefix} {label}",
@@ -151,39 +153,49 @@ def _model_menu_keyboard(user: dict[str, object]) -> InlineKeyboardMarkup:
                 )
             )
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="ai:dashboard")])
+    rows.append([InlineKeyboardButton(text="Orqaga", callback_data="ai:dashboard")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _dashboard_text(user: dict[str, object]) -> str:
-    token_balance = int(user.get("token_balance", 0) or 0)
+    current_plan = str(user.get("current_plan", "free") or "free").strip().lower()
+    credit_balance = int(user.get("credit_balance", user.get("token_balance", 0)) or 0)
     total_in = int(user.get("total_prompt_tokens", 0) or 0)
     total_out = int(user.get("total_completion_tokens", 0) or 0)
     rows = [
-        "<b>🤖 AI Chat</b>",
+        "<b>AI Chat</b>",
         "",
-        f"🧠 Tanlangan model: <b>{html.escape(_selected_model_label(user))}</b>",
-        f"💳 Balans: <b>{token_balance}</b> token",
-        f"📥 Input tokenlar: <b>{total_in}</b>",
-        f"📤 Output tokenlar: <b>{total_out}</b>",
+        f"Model: <b>{html.escape(_selected_model_label(user))}</b>",
+        (
+            f"Kredit balansi: <b>{credit_balance}</b> kredit"
+            if current_plan == "premium"
+            else (
+                f"Free limit: <b>{free_ai_chat_limit_per_day()} chat / kun</b>\n"
+                f"Kutish: <b>{free_ai_chat_cooldown_seconds() // 60} daqiqa</b>"
+            )
+        ),
+        f"Input tokenlar: <b>{total_in}</b>",
+        f"Output tokenlar: <b>{total_out}</b>",
+        "",
+        "Savol yuboring. Bot kerak bo'lsa modelni o'zi tanlaydi.",
     ]
-    rows.append("")
-    rows.append("💬 Savol yuboring. Bot kerak bolsa modelni ozi tanlaydi.")
+    if current_plan == "premium":
+        rows.insert(4, f"Narx: <b>{premium_ai_chat_credit_cost()}</b> kredit / chat")
     return "\n".join(rows)
 
 
 def _legacy_plans_text() -> str:
     return (
-        "<b>📚 AI tariflari bu bolimdan olib tashlangan.</b>\n"
-        "⭐ Premium uchun alohida sahifadan foydalaning."
+        "<b>AI tariflari bu bolimdan olib tashlangan.</b>\n"
+        "Premium uchun alohida sahifadan foydalaning."
     )
 
 
 def _model_menu_text(user: dict[str, object]) -> str:
     return (
-        "<b>🧠 Model tanlash</b>\n\n"
-        f"🧠 Tanlangan model: <b>{html.escape(_selected_model_label(user))}</b>\n\n"
-        "🤖 Auto rejim botga modelni ozi tanlash imkonini beradi."
+        "<b>Model tanlash</b>\n\n"
+        f"Tanlangan model: <b>{html.escape(_selected_model_label(user))}</b>\n\n"
+        "Auto rejim botga modelni ozi tanlash imkonini beradi."
     )
 
 
@@ -213,20 +225,9 @@ def _markdown_to_telegram_html(text: str) -> str:
         flags=re.S,
     )
     escaped = html.escape(normalized)
-
-    link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
-    escaped = link_pattern.sub(
-        lambda match: (
-            f'<a href="{html.escape(match.group(2), quote=True)}">{match.group(1)}</a>'
-        ),
-        escaped,
-    )
     escaped = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
     escaped = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", escaped)
-    escaped = re.sub(r"__([^_\n]+)__", r"<b>\1</b>", escaped)
-    escaped = re.sub(r"~~([^~\n]+)~~", r"<s>\1</s>", escaped)
     escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", escaped)
-    escaped = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"<i>\1</i>", escaped)
 
     rendered_lines: list[str] = []
     for raw_line in escaped.split("\n"):
@@ -234,10 +235,6 @@ def _markdown_to_telegram_html(text: str) -> str:
         if stripped.startswith("#"):
             heading = stripped.lstrip("#").strip()
             rendered_lines.append(f"<b>{heading}</b>" if heading else "")
-            continue
-        quote_match = re.match(r"^\s*&gt;\s?(.*)$", raw_line)
-        if quote_match:
-            rendered_lines.append(f"<blockquote>{quote_match.group(1)}</blockquote>")
             continue
         bullet_match = re.match(r"^(\s*)[-*]\s+(.+)$", raw_line)
         if bullet_match:
@@ -260,9 +257,7 @@ def _render_stream_preview(text: str) -> str:
 
 def _render_final_answer(text: str, footer: str) -> str:
     answer_text = _trim_ai_text(text, limit=AI_FINAL_TEXT_LIMIT) or "Javob bosh qaytdi."
-    rendered = _markdown_to_telegram_html(answer_text)
-    if not rendered:
-        rendered = html.escape(answer_text)
+    rendered = _markdown_to_telegram_html(answer_text) or html.escape(answer_text)
     return f"{rendered}{footer}"
 
 
@@ -354,18 +349,12 @@ async def ai_plans_callback(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "ai:plan_menu")
 async def ai_plan_menu_callback(callback: CallbackQuery) -> None:
-    await callback.answer(
-        "📚 AI tarif tanlovi olib tashlangan. Premium alohida sahifada.",
-        show_alert=True,
-    )
+    await callback.answer("AI tarif tanlovi olib tashlangan.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("ai:plan:set:"))
 async def ai_plan_set_callback(callback: CallbackQuery) -> None:
-    await callback.answer(
-        "📚 AI tarif tanlovi endi ishlatilmaydi.",
-        show_alert=True,
-    )
+    await callback.answer("AI tarif tanlovi endi ishlatilmaydi.", show_alert=True)
 
 
 @router.callback_query(F.data == "ai:model_menu")
@@ -409,7 +398,7 @@ async def ai_model_set_callback(
         full_name=full_name,
         selected_model=selected_model,
     )
-    await callback.answer("✅ Model yangilandi")
+    await callback.answer("Model yangilandi")
     await _show_dashboard(
         callback,
         ai_store=ai_store,
@@ -465,7 +454,7 @@ async def ai_diag_command(
         )
         await message.answer(
             (
-                "<b>🩺 AI diagnostika</b>\n"
+                "<b>AI diagnostika</b>\n"
                 f"Status: <b>OK</b>\n"
                 f"Model: <code>{html.escape(result.model)}</code>\n"
                 f"Route: <code>{html.escape(decision.route)}</code>"
@@ -475,7 +464,7 @@ async def ai_diag_command(
     except Exception as error:  # noqa: BLE001
         await message.answer(
             (
-                "<b>🩺 AI diagnostika</b>\n"
+                "<b>AI diagnostika</b>\n"
                 f"Status: <b>Xato</b>\n"
                 f"Sabab: <code>{html.escape(str(error)[:350])}</code>"
             ),
@@ -487,10 +476,7 @@ async def ai_diag_command(
 async def ai_log_channel_member_handler(event: ChatMemberUpdated) -> None:
     if getattr(event.chat, "type", None) != "channel":
         return
-    if str(getattr(event.new_chat_member, "status", "") or "") in {
-        "administrator",
-        "member",
-    }:
+    if str(getattr(event.new_chat_member, "status", "") or "") in {"administrator", "member"}:
         remember_channel(event.chat)
 
 
@@ -509,7 +495,7 @@ async def ai_clear_callback(
     user_id, _, _ = _user_identity(callback)
     await ai_store.clear_conversation(user_id=user_id)
     await state.set_state(AIChatState.waiting_prompt)
-    await callback.answer("🧹 Kontekst tozalandi")
+    await callback.answer("Kontekst tozalandi")
     user_id, username, full_name = _user_identity(callback)
     await _show_dashboard(
         callback,
@@ -533,53 +519,92 @@ async def ai_prompt_handler(
         return
 
     user_id, username, full_name = _user_identity(message)
-    user, effective_plan, wait_seconds = await ai_store.check_request_limits(
+    user = await ai_store.ensure_user(
         user_id=user_id,
         username=username,
         full_name=full_name,
     )
-    if wait_seconds > 0:
-        token_balance = int(user.get("token_balance", 0) or 0)
-        if token_balance <= 0:
+    effective_plan = effective_selected_plan(user)
+    selected_model_alias = str(user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO)
+    history = await ai_store.get_conversation(user_id=user_id)
+    authorization = await ai_store.authorize_ai_service(
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        service_key="ai_chat",
+        credit_cost=premium_ai_chat_credit_cost(),
+        estimated_ai_cost_usd=projected_ai_cost_usd(
+            user_text=text,
+            history=history,
+            current_plan=str(user.get("current_plan", "free") or "free"),
+            effective_plan=effective_plan,
+            selected_model_alias=selected_model_alias,
+        ),
+        cooldown_seconds=(
+            0
+            if str(user.get("current_plan", "free") or "free") == "premium"
+            else free_ai_chat_cooldown_seconds()
+        ),
+        free_daily_limit=free_ai_chat_limit_per_day(),
+    )
+    if not bool(authorization.get("ok")):
+        reason = str(authorization.get("reason", "") or "")
+        if reason == "cooldown":
             await message.answer(
                 (
-                    "<b>⛔ Token tugagan</b>\n"
-                    f"Keyingi refillgacha taxminan <b>{wait_seconds}</b> soniya qoldi."
-                ),
-                parse_mode="HTML",
-                reply_markup=None if is_group_chat(message) else upgrade_prompt_keyboard(),
-            )
-        else:
-            await message.answer(
-                (
-                    "<b>⏳ Limit kutish rejimi</b>\n"
-                    f"Keyingi AI sorov uchun <b>{wait_seconds}</b> soniya kuting."
+                    "<b>Kutish kerak</b>\n"
+                    f"Keyingi free AI chat uchun <b>{int(authorization.get('wait_seconds', 0) or 0)}</b> soniya kuting."
                 ),
                 parse_mode="HTML",
                 reply_markup=ai_dashboard_keyboard(),
             )
+            return
+        if reason == "daily_limit":
+            await message.answer(
+                (
+                    "<b>Kunlik free AI chat limiti tugadi</b>\n"
+                    f"Bugungi limit: <b>{free_ai_chat_limit_per_day()}</b> ta chat."
+                ),
+                parse_mode="HTML",
+                reply_markup=ai_dashboard_keyboard(),
+            )
+            return
+        if reason == "insufficient_credits":
+            await message.answer(
+                (
+                    "<b>Kredit yetarli emas</b>\n"
+                    f"AI chat uchun <b>{premium_ai_chat_credit_cost()}</b> kredit kerak.\n"
+                    f"Balans: <b>{int(user.get('credit_balance', user.get('token_balance', 0)) or 0)}</b> kredit"
+                ),
+                parse_mode="HTML",
+                reply_markup=None if is_group_chat(message) else upgrade_prompt_keyboard(),
+            )
+            return
+        if reason == "budget_cap":
+            await message.answer(
+                (
+                    "<b>AI byudjet limiti tugadi</b>\n"
+                    "Bu billing siklidagi xavfsiz AI byudjet sarflab bo'lingan."
+                ),
+                parse_mode="HTML",
+                reply_markup=None if is_group_chat(message) else upgrade_prompt_keyboard(),
+            )
+            return
+        if reason == "daily_credit_cap":
+            await message.answer(
+                "<b>Kunlik kredit xavfsizlik limiti tugadi</b>",
+                parse_mode="HTML",
+                reply_markup=ai_dashboard_keyboard(),
+            )
+            return
+        await message.answer(
+            "<b>AI so'rovi hozir qabul qilinmadi.</b>",
+            parse_mode="HTML",
+            reply_markup=ai_dashboard_keyboard(),
+        )
         return
 
-    selected_model_alias = str(
-        user.get("selected_model", MODEL_ALIAS_AUTO) or MODEL_ALIAS_AUTO
-    )
-    projected_cost = projected_credits(
-        user_text=text,
-        current_plan=str(user.get("current_plan", "free") or "free"),
-        effective_plan=effective_plan,
-        selected_model_alias=selected_model_alias,
-    )
-    charge = await ensure_balance(
-        ai_store,
-        message,
-        "ai_chat",
-        custom_cost=projected_cost,
-        reply_markup=ai_dashboard_keyboard(),
-    )
-    if charge is None:
-        return
-
-    history = await ai_store.get_conversation(user_id=user_id)
+    hold_id = str(authorization.get("hold_id", "") or "")
     progress_message = await message.answer(
         "<i>AI yozmoqda...</i>",
         parse_mode="HTML",
@@ -616,24 +641,21 @@ async def ai_prompt_handler(
                 selected_model_alias=selected_model_alias,
                 on_text=on_stream_text,
             )
-        credits_used = estimate_credits(
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-            decision=decision,
-        )
-        updated_user = await ai_store.record_usage(
+        credits_used = premium_ai_chat_credit_cost() if effective_plan == "premium" else 0
+        updated_user = await ai_store.finalize_ai_service(
             user_id=user_id,
             username=username,
             full_name=full_name,
-            effective_plan=effective_plan,
-            provider=result.provider,
-            model=result.model,
-            route=result.route,
-            credits_used=credits_used,
+            service_key="ai_chat",
+            ok=True,
+            hold_id=hold_id,
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
-            latency_ms=result.latency_ms,
-            ok=True,
+            actual_ai_cost_usd=estimate_grok_chat_cost_usd(
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+            ),
+            note=result.model,
         )
         await ai_store.append_conversation_turn(
             user_id=user_id,
@@ -641,20 +663,14 @@ async def ai_prompt_handler(
             assistant_text=result.text,
         )
     except Exception as error:  # noqa: BLE001
-        await ai_store.record_usage(
+        await ai_store.finalize_ai_service(
             user_id=user_id,
             username=username,
             full_name=full_name,
-            effective_plan=effective_plan,
-            provider="error",
-            model="",
-            route="failed",
-            credits_used=0,
-            prompt_tokens=0,
-            completion_tokens=0,
-            latency_ms=0,
+            service_key="ai_chat",
             ok=False,
-            error_text=str(error),
+            hold_id=hold_id,
+            note=str(error),
         )
         error_text = f"<b>{_friendly_ai_error(error)}</b>"
         try:
@@ -675,9 +691,11 @@ async def ai_prompt_handler(
         [
             "",
             "",
-            f"🧠 Model: <b>{html.escape(model_label(decision.model_alias))}</b>",
-            f"📉 Kredit sarfi: <b>{credits_used}</b>",
-            f"💳 Qolgan token: <b>{int(updated_user.get('token_balance', 0) or 0)}</b>",
+            f"Model: <b>{html.escape(model_label(decision.model_alias))}</b>",
+            f"Kredit sarfi: <b>{credits_used}</b>",
+            (
+                f"Qolgan kredit: <b>{int(updated_user.get('credit_balance', updated_user.get('token_balance', 0)) or 0)}</b>"
+            ),
         ]
     )
     answer_text = result.text.strip() or "Javob bosh qaytdi."
@@ -747,10 +765,10 @@ async def ai_set_plan_command(
     )
     await message.answer(
         (
-            "<b>✅ AI plan yangilandi</b>\n"
+            "<b>AI plan yangilandi</b>\n"
             f"User: <code>{user_id}</code>\n"
             f"Plan: <b>{html.escape(str(updated.get('current_plan', 'free')))}</b>\n"
-            f"Token: <b>{int(updated.get('token_balance', 0) or 0)}</b>"
+            f"Kredit: <b>{int(updated.get('credit_balance', updated.get('token_balance', 0)) or 0)}</b>"
         ),
         parse_mode="HTML",
     )
@@ -776,9 +794,9 @@ async def ai_set_credits_command(
     updated = await ai_store.set_user_credits(user_id=user_id, credits=credits)
     await message.answer(
         (
-            "<b>✅ AI kredit yangilandi</b>\n"
+            "<b>AI kredit yangilandi</b>\n"
             f"User: <code>{user_id}</code>\n"
-            f"Qolgan kredit: <b>{int(updated.get('token_balance', 0) or 0)}</b>"
+            f"Qolgan kredit: <b>{int(updated.get('credit_balance', updated.get('token_balance', 0)) or 0)}</b>"
         ),
         parse_mode="HTML",
     )
@@ -787,6 +805,6 @@ async def ai_set_credits_command(
 @router.message(AIChatState.waiting_prompt)
 async def ai_fallback_handler(message: Message) -> None:
     await message.answer(
-        "💬 Savolni oddiy matn korinishida yuboring.",
+        "Savolni oddiy matn korinishida yuboring.",
         reply_markup=ai_dashboard_keyboard(),
     )

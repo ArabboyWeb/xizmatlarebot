@@ -11,13 +11,16 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from handlers.admin import admin_ids, is_admin_user_id
+from services.ai_costs import premium_financial_snapshot
 from services.ai_store import AIStore
 from services.group_command_mode import is_group_chat
 from services.token_pricing import (
+    premium_ai_chat_credit_cost,
+    premium_ai_image_credit_cost,
+    premium_ai_search_credit_cost,
     premium_card_number,
-    premium_daily_tokens,
+    premium_monthly_credits,
     premium_price_uzs,
-    premium_upgrade_tokens,
 )
 from ui.premium import (
     premium_admin_request_keyboard,
@@ -52,28 +55,32 @@ def _premium_page_text(
     notice: str = "",
 ) -> str:
     current_plan = str(user.get("current_plan", "free") or "free").strip().lower()
-    token_balance = int(user.get("token_balance", 0) or 0)
-    refill_label = str(user.get("reset_date", "") or "").replace("T", " ")[:16]
+    credit_balance = int(user.get("credit_balance", user.get("token_balance", 0)) or 0)
+    refill_label = str(user.get("next_credit_reset_at", user.get("reset_date", "")) or "").replace("T", " ")[:16]
+    financials = premium_financial_snapshot()
     rows = [
         "<b>Premium</b>",
         "",
         f"Narx: <b>{_format_price()} UZS</b>",
         f"Karta: <code>{premium_card_number()}</code>",
         "",
-        f"Faollashganda: <b>{premium_upgrade_tokens()}</b> token",
-        f"Har 24 soatda refill: <b>{premium_daily_tokens()}</b> token",
+        f"Har billing siklida: <b>{premium_monthly_credits()}</b> kredit",
+        f"AI Chat: <b>{premium_ai_chat_credit_cost()}</b> kredit / xabar",
+        f"AI Rasm: <b>{premium_ai_image_credit_cost()}</b> kredit / rasm",
+        f"AI Web Search: <b>{premium_ai_search_credit_cost()}</b> kredit / so'rov",
+        f"AI byudjet cap: <b>~${financials['premium_safe_ai_budget_usd']}</b> / oy",
         "",
         f"Joriy plan: <b>{html.escape(current_plan.title())}</b>",
-        f"Balans: <b>{token_balance}</b> token",
+        f"Balans: <b>{credit_balance}</b> kredit",
     ]
     if refill_label:
-        rows.append(f"Keyingi refill: <b>{html.escape(refill_label)}</b>")
+        rows.append(f"Keyingi kredit reset: <b>{html.escape(refill_label)}</b>")
     if current_plan == "premium":
         rows.extend(
             [
                 "",
                 "<b>Premium sizda faol.</b>",
-                "Yangi sorov yuborish shart emas.",
+                "Kreditlar oyiga bir marta reset qilinadi, qolgan kreditlar cheksiz yig'ilmaydi.",
             ]
         )
     elif active_request is not None:
@@ -526,9 +533,9 @@ async def premium_approve_callback(
             chat_id=int(request.get("user_id", 0) or 0),
             text=(
                 "<b>Premium faollashtirildi</b>\n"
-                f"Hisobingizga <b>{premium_upgrade_tokens()}</b> token qo'shildi.\n"
-                f"Keyingi refill: har 24 soatda <b>{premium_daily_tokens()}</b> token.\n"
-                f"Joriy balans: <b>{int(user.get('token_balance', 0) or 0)}</b> token"
+                f"Hisobingizga <b>{premium_monthly_credits()}</b> kredit ajratildi.\n"
+                "Keyingi reset: billing sikli tugaganda.\n"
+                f"Joriy balans: <b>{int(user.get('credit_balance', user.get('token_balance', 0)) or 0)}</b> kredit"
             ),
             parse_mode="HTML",
         )

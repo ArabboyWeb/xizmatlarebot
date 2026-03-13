@@ -10,6 +10,7 @@ from typing import Any
 
 import aiohttp
 
+from services.ai_costs import estimate_grok_chat_cost_usd
 from services.load_control import run_with_limit
 from services.token_pricing import ai_min_cost
 
@@ -43,6 +44,7 @@ class AIRouteDecision:
     credit_multiplier: int
     effective_plan: str
     model_alias: str
+    max_output_tokens: int
 
 
 @dataclass(slots=True)
@@ -89,6 +91,18 @@ def _free_complex_model() -> str:
     return _env("AI_FREE_MODEL_COMPLEX", "qwen/qwen3-vl-235b-a22b-thinking")
 
 
+def _premium_chat_model() -> str:
+    return _env("AI_PREMIUM_CHAT_MODEL", _env("AI_PREMIUM_MODEL_COMPLEX", "x-ai/grok-4.1-fast"))
+
+
+def _free_max_output_tokens() -> int:
+    return max(256, int(_env("AI_FREE_MAX_OUTPUT_TOKENS", "700")))
+
+
+def _premium_max_output_tokens() -> int:
+    return max(256, int(_env("AI_PREMIUM_MAX_OUTPUT_TOKENS", "900")))
+
+
 def plan_level(plan: str) -> int:
     return PLAN_LEVELS.get((plan or "free").strip().lower(), 0)
 
@@ -114,15 +128,24 @@ def effective_selected_plan(user: dict[str, Any]) -> str:
     return current_plan if selected_plan == MODEL_ALIAS_AUTO else selected_plan
 
 
-def _manual_model_specs() -> dict[str, tuple[str, str, int, str]]:
+def _manual_model_specs() -> dict[str, tuple[str, str, int, str, int]]:
     return {
-        "free_glm": ("openrouter", _free_simple_model(), 1, "GLM-4.5 Air Free"),
-        "free_qwen": ("openrouter", _free_complex_model(), 1, "Qwen 3 VL Thinking"),
+        "free_glm": ("openrouter", _free_simple_model(), 1, "GLM-4.5 Air Free", _free_max_output_tokens()),
+        "free_qwen": ("openrouter", _free_complex_model(), 1, "Qwen 3 VL Thinking", _free_max_output_tokens()),
+        "premium_grok_fast": (
+            "openrouter",
+            _premium_chat_model(),
+            1,
+            "Grok 4.1 Fast",
+            _premium_max_output_tokens(),
+        ),
     }
 
 
 def allowed_model_aliases_for_plan(plan: str) -> list[str]:
-    _ = (plan or "free").strip().lower()
+    normalized = (plan or "free").strip().lower()
+    if normalized == "premium":
+        return ["premium_grok_fast"]
     return ["free_glm", "free_qwen"]
 
 
@@ -147,7 +170,7 @@ def _manual_route_decision(selected_model_alias: str, effective_plan: str) -> AI
         return None
     if normalized_alias not in allowed_model_aliases_for_plan(effective_plan):
         return None
-    provider, model, credit_multiplier, _ = _manual_model_specs()[normalized_alias]
+    provider, model, credit_multiplier, _, max_output_tokens = _manual_model_specs()[normalized_alias]
     return AIRouteDecision(
         provider=provider,
         model=model,
@@ -155,6 +178,7 @@ def _manual_route_decision(selected_model_alias: str, effective_plan: str) -> AI
         credit_multiplier=credit_multiplier,
         effective_plan=effective_plan,
         model_alias=normalized_alias,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -320,39 +344,28 @@ def select_route(
             credit_multiplier=1,
             effective_plan="free",
             model_alias=model_alias,
+            max_output_tokens=_free_max_output_tokens(),
         )
 
     if effective_plan == "premium":
-        model = _free_simple_model()
-        model_alias = "free_glm"
-        if complexity in {"standard", "complex"}:
-            model = _free_complex_model()
-            model_alias = "free_qwen"
-        if complexity == "simple":
-            return AIRouteDecision(
-                provider="openrouter",
-                model=model,
-                route="premium_simple",
-                credit_multiplier=1,
-                effective_plan="premium",
-                model_alias=model_alias,
-            )
         return AIRouteDecision(
             provider="openrouter",
-            model=model,
-            route="premium_complex",
+            model=_premium_chat_model(),
+            route=f"premium_{complexity}",
             credit_multiplier=1,
             effective_plan="premium",
-            model_alias=model_alias,
+            model_alias="premium_grok_fast",
+            max_output_tokens=_premium_max_output_tokens(),
         )
 
     return AIRouteDecision(
         provider="openrouter",
-        model=_free_complex_model(),
+        model=_premium_chat_model(),
         route="premium_complex",
         credit_multiplier=1,
         effective_plan="premium",
-        model_alias="free_qwen",
+        model_alias="premium_grok_fast",
+        max_output_tokens=_premium_max_output_tokens(),
     )
 
 
@@ -362,18 +375,10 @@ def estimate_credits(
     completion_tokens: int,
     decision: AIRouteDecision,
 ) -> int:
-    min_cost = ai_min_cost(decision.effective_plan)
-    token_unit = max(100, int(_env("AI_CREDIT_TOKEN_UNIT", "1000")))
-    total_tokens = max(1, int(prompt_tokens) + int(completion_tokens))
-    base_units = max(1, math.ceil(total_tokens / token_unit))
     if decision.effective_plan == "free":
-        multiplier = max(2, int(_env("BOT_AI_FREE_COST_MULTIPLIER", "4")))
-        return max(min_cost, base_units * multiplier)
-    multiplier = max(1, int(_env("BOT_AI_PREMIUM_COST_MULTIPLIER", "2")))
-    return max(
-        min_cost,
-        base_units * max(1, int(decision.credit_multiplier)) * multiplier,
-    )
+        return 0
+    _ = (prompt_tokens, completion_tokens)
+    return ai_min_cost(decision.effective_plan)
 
 
 def projected_credits(
@@ -389,18 +394,32 @@ def projected_credits(
         effective_plan=effective_plan,
         selected_model_alias=selected_model_alias,
     )
-    complexity = _complexity(user_text)
-    approx_prompt_tokens = max(1, math.ceil(len(str(user_text or "").strip()) / 4))
-    if complexity == "simple":
-        approx_completion_tokens = 700
-    elif complexity == "standard":
-        approx_completion_tokens = 1600
-    else:
-        approx_completion_tokens = 3200
-    return estimate_credits(
-        prompt_tokens=approx_prompt_tokens,
-        completion_tokens=approx_completion_tokens,
-        decision=decision,
+    if decision.effective_plan == "free":
+        return 0
+    return ai_min_cost(decision.effective_plan)
+
+
+def projected_ai_cost_usd(
+    *,
+    user_text: str,
+    history: list[dict[str, str]],
+    current_plan: str,
+    effective_plan: str,
+    selected_model_alias: str = MODEL_ALIAS_AUTO,
+) -> float:
+    decision = select_route(
+        user_text,
+        current_plan=current_plan,
+        effective_plan=effective_plan,
+        selected_model_alias=selected_model_alias,
+    )
+    if decision.effective_plan != "premium":
+        return 0.0
+    messages = build_messages(history, user_text)
+    prompt_tokens = _approx_token_count(_conversation_text(messages))
+    return estimate_grok_chat_cost_usd(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=decision.max_output_tokens,
     )
 
 
@@ -434,12 +453,19 @@ def _conversation_text(messages: list[dict[str, str]]) -> str:
     return "\n\n".join(rows)
 
 
-async def _openrouter_completion(messages: list[dict[str, str]], model: str, route: str) -> AIResult:
+async def _openrouter_completion(
+    messages: list[dict[str, str]],
+    model: str,
+    route: str,
+    *,
+    max_output_tokens: int,
+) -> AIResult:
     started = time.perf_counter()
     payload = {
         "model": model,
         "messages": messages,
         "temperature": 0.4,
+        "max_tokens": max(1, int(max_output_tokens)),
     }
     timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
     async with aiohttp.ClientSession(timeout=timeout, headers=_openrouter_headers()) as session:
@@ -486,6 +512,7 @@ async def _openrouter_completion_stream(
     model: str,
     route: str,
     *,
+    max_output_tokens: int,
     on_text: Callable[[str], Awaitable[None]] | None,
 ) -> AIResult:
     started = time.perf_counter()
@@ -494,6 +521,7 @@ async def _openrouter_completion_stream(
         "messages": messages,
         "temperature": 0.4,
         "stream": True,
+        "max_tokens": max(1, int(max_output_tokens)),
     }
     timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
     text_chunks: list[str] = []
@@ -641,10 +669,16 @@ async def generate_ai_reply(
                     messages,
                     decision.model,
                     decision.route,
+                    max_output_tokens=decision.max_output_tokens,
                     on_text=on_text,
                 )
             else:
-                result = await _openrouter_completion(messages, decision.model, decision.route)
+                result = await _openrouter_completion(
+                    messages,
+                    decision.model,
+                    decision.route,
+                    max_output_tokens=decision.max_output_tokens,
+                )
         elif decision.provider == "google":
             result = await _google_completion(
                 _conversation_text(messages),
